@@ -581,7 +581,7 @@ function LoanCalc({listing,allListings,complexes}){
 }
 
 // ── 시세/실거래/대출 통합 패널 ───────────────────────────────────────────────
-function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade}){
+function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade,onBack}){
   const [tab,setTab]=useState("chart");
   const color=complex?DISTRICTS[complex.gu]?.color:"#1e40af";
   const cxId=listing.complexId;
@@ -604,7 +604,7 @@ function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade}){
     tab==="trades"&&h("div",null,
       h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
         h("span",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},"단지 실거래 내역"),
-        h(Btn,{onClick:()=>onAddTrade(listing),style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
+        h(Btn,{onClick:()=>{onAddTrade(listing);if(onBack)setTimeout(()=>onBack(),50);},style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
       ),
       h(TradeHistory,{complexId:cxId,trades,color})
     ),
@@ -849,7 +849,7 @@ function ListingDetail({listing,complex,onBack,allListings,allComplexes,trades,o
         h("div",{style:{display:"flex",flexWrap:"wrap",gap:5}},...(complex?.amenities||[]).map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a)))
       ),
       h(Btn,{style:{width:"100%",background:info?`linear-gradient(135deg,${info.color},${info.color}bb)`:"#1e40af",color:"#fff",borderRadius:12,padding:"14px 0",fontSize:15,fontWeight:700}},"📞 문의하기"),
-      h(MarketPanel,{listing,complex,allListings,allComplexes,trades,onAddTrade})
+      h(MarketPanel,{listing,complex,allListings,allComplexes,trades,onAddTrade,onBack})
     )
   );
 }
