@@ -957,6 +957,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
   const [tab,setTab]=useState("listings");
   const [showForm,setShowForm]=useState(false);
   const [editItem,setEditItem]=useState(null);
+  const [showDone,setShowDone]=useState(false);
   const {confirm,alert,Modal}=useDialog();
 
   const emptyL={complexId:"",unit:"",type:"매매",price:"",deposit:"",monthly:"",size:"",rooms:1,baths:1,floor:"",direction:"남향",status:"판매중",description:"",photos:[]};
@@ -979,6 +980,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
       deposit:isMonthly?Number(lForm.deposit||0):(isJeonse?Number(lForm.price||0):null),
       monthly:isMonthly?Number(lForm.monthly||0):null,
       size:Number(lForm.size),rooms:Number(lForm.rooms),baths:Number(lForm.baths),floor:Number(lForm.floor),
+      photos:lForm.photos||[],
       registeredAt:new Date().toISOString().split("T")[0]
     };
     let updated;
@@ -1020,12 +1022,16 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
 
     // ─ 매물 목록 ─
     tab==="listings"&&!showForm&&h("div",null,
-      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
-        h("span",{style:{fontWeight:700,color:"#0f172a"}},`매물 목록 (${listings.length}건)`),
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}},
+        h("span",{style:{fontWeight:700,color:"#0f172a"}},`매물 목록 (${listings.filter(l=>l.status==="판매중").length}건 판매중)`),
         h(Btn,{onClick:()=>{setLForm(emptyL);setEditItem(null);setShowForm(true);},style:{background:"#dc2626",color:"#fff",borderRadius:8,padding:"8px 14px",fontWeight:700,fontSize:13}},"+ 매물 등록")
       ),
+      h("div",{style:{display:"flex",gap:6,marginBottom:12}},
+        h(Btn,{onClick:()=>setShowDone(false),style:{padding:"5px 12px",borderRadius:8,border:`2px solid ${!showDone?"#dc2626":"#e2e8f0"}`,background:!showDone?"#fee2e2":"#f8fafc",color:!showDone?"#dc2626":"#64748b",fontWeight:700,fontSize:12}},"판매중 "+listings.filter(l=>l.status==="판매중").length),
+        h(Btn,{onClick:()=>setShowDone(true),style:{padding:"5px 12px",borderRadius:8,border:`2px solid ${showDone?"#64748b":"#e2e8f0"}`,background:showDone?"#f1f5f9":"#f8fafc",color:showDone?"#475569":"#94a3b8",fontWeight:700,fontSize:12}},"거래완료 "+listings.filter(l=>l.status==="거래완료").length)
+      ),
       h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
-        ...listings.map(l=>{
+        ...(showDone?listings.filter(l=>l.status==="거래완료"):listings.filter(l=>l.status==="판매중")).map(l=>{
           const c=complexes.find(cx=>cx.id===l.complexId),info=c?DISTRICTS[c.gu]:null;
           return h("div",{key:l.id,style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",borderLeft:`4px solid ${info?.color||"#e2e8f0"}`}},
             // 사진 썸네일
@@ -1040,7 +1046,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
               h("div",{style:{display:"flex",alignItems:"center",gap:4}},h("span",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l,listings,complexes)),(()=>{const dp=calcDynamicPrice(l,listings,complexes);if(!dp||Math.abs(dp.pct)<0.3)return null;const up=dp.pct>0;return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a"}},(up?"▲":"▼")+Math.abs(dp.pct)+"%");})())
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
-              h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId)});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
+              h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId),deposit:l.type==="월세"?String(l.deposit||l.price||""): String(l.deposit||""),monthly:String(l.monthly||"")});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
               h(Btn,{onClick:async()=>{const ok=await confirm("매물을 삭제할까요?",`${c?.name||""} ${l.unit}`);if(ok){const u=listings.filter(x=>x.id!==l.id);setListings(u);saveAll(complexes,u);}},style:rowS("#fee2e2","#dc2626")},"삭제"),
               h(Btn,{onClick:()=>{const u=listings.map(x=>x.id===l.id?{...x,status:x.status==="판매중"?"거래완료":"판매중"}:x);setListings(u);saveAll(complexes,u);},style:rowS("#fff7ed","#ea580c")},l.status==="판매중"?"완료":"재등록")
             )
@@ -1055,8 +1061,14 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
       fld("단지 선택",h("select",{value:lForm.complexId,onChange:e=>setLForm(f=>({...f,complexId:e.target.value})),style:iS},h("option",{value:""},"선택"),...complexes.map(c=>h("option",{key:c.id,value:c.id},complexLabel(c))))),
       fld("호수",h("input",{value:lForm.unit,onChange:e=>setLForm(f=>({...f,unit:e.target.value})),placeholder:"예: 1502호",style:iS})),
       fld("거래유형",h("select",{value:lForm.type,onChange:e=>setLForm(f=>({...f,type:e.target.value})),style:iS},...["매매","전세","월세"].map(t=>h("option",{key:t},t)))),
-      fld(lForm.type==="월세"?"보증금 (만원)":"가격 (만원)",h("input",{type:"number",value:lForm.price,onChange:e=>setLForm(f=>({...f,price:e.target.value})),style:iS})),
-      lForm.type==="월세"&&fld("월세 (만원)",h("input",{type:"number",value:lForm.monthly,onChange:e=>setLForm(f=>({...f,monthly:e.target.value})),style:iS})),
+      lForm.type==="월세"
+        ?h(Fragment,null,
+            fld("보증금 (만원)",h("input",{type:"number",value:lForm.deposit,onChange:e=>setLForm(f=>({...f,deposit:e.target.value})),placeholder:"예: 1000",style:iS})),
+            fld("월세 (만원)",h("input",{type:"number",value:lForm.monthly,onChange:e=>setLForm(f=>({...f,monthly:e.target.value})),placeholder:"예: 80",style:iS}))
+          )
+        :lForm.type==="전세"
+          ?fld("전세금 (만원)",h("input",{type:"number",value:lForm.price,onChange:e=>setLForm(f=>({...f,price:e.target.value})),placeholder:"예: 30000",style:iS}))
+          :fld("매매가 (만원)",h("input",{type:"number",value:lForm.price,onChange:e=>setLForm(f=>({...f,price:e.target.value})),placeholder:"예: 50000",style:iS})),
       h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}},
         fld("면적(㎡)",h("input",{type:"number",value:lForm.size,onChange:e=>setLForm(f=>({...f,size:e.target.value})),style:iS})),
         fld("층수",h("input",{type:"number",value:lForm.floor,onChange:e=>setLForm(f=>({...f,floor:e.target.value})),style:iS})),
