@@ -890,9 +890,11 @@ function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trad
       )
     ),
     h("div",{style:{display:"flex",gap:18,background:"#fff",borderRadius:12,padding:16,marginBottom:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}},
-      ...[["총세대",complex.totalUnits+"세대"],["층수",complex.floors+"층"],["준공",String(complex.year||"-")]].map(([k,v])=>
-        h("div",{key:k},h("div",{style:{fontSize:10,color:"#94a3b8"}},k),h("div",{style:{fontSize:14,fontWeight:700,color:"#0f172a"}},v))
-      )
+      ...(()=>{
+        const fields=[["총세대",complex.totalUnits+"세대"],["층수",complex.floors+"층"],["준공",String(complex.year||"-")]];
+        if(complex.builder)fields.push(["건설사",complex.builder]);
+        return fields.map(([k,v])=>h("div",{key:k},h("div",{style:{fontSize:10,color:"#94a3b8"}},k),h("div",{style:{fontSize:14,fontWeight:700,color:"#0f172a",fontSize:13}},v)));
+      })()
     ),
     h("div",{style:{marginBottom:14,display:"flex",flexWrap:"wrap",gap:5}},...complex.amenities.map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a))),
     h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",marginBottom:10}},`현재 매물 (${mine.length}건)`),
@@ -912,71 +914,107 @@ function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trad
 }
 
 
-// ── 실거래가 단지 순위 컴포넌트 ────────────────────────────────────────────
-function ComplexRanking({complexes,trades,allListings,onSelectComplex}){
-  const [show,setShow]=useState(false);
+// ── 순위 탭 전체 화면 컴포넌트 ─────────────────────────────────────────────
+function RankingTab({complexes,trades,allListings,onSelectComplex}){
+  const [sortKey,setSortKey]=useState("lastTrade"); // lastTrade | dynamic | name
 
   const ranked=useMemo(()=>{
     return complexes.map(cx=>{
+      // 해당 단지의 실거래 내역
       const cxTrades=(trades||[]).filter(t=>t.complexId===cx.id);
-      const lastTrade=cxTrades.slice(-1)[0]||null;
-      const prevTrade=cxTrades.slice(-2)[0]||null;
-      const delta=lastTrade&&prevTrade?lastTrade.price-prevTrade.price:0;
-      return{...cx,lastPrice:lastTrade?.lastPrice||0,lastDate:lastTrade?.date||null,delta,tradeCnt:cxTrades.length};
-    })
-    .filter(cx=>cx.lastPrice>0)
-    .sort((a,b)=>b.lastPrice-a.lastPrice);
-  },[complexes,trades]);
+      // 마지막 실거래가 (lastPrice 필드 우선, 없으면 price)
+      const lastTrade=cxTrades.length>0?cxTrades[cxTrades.length-1]:null;
+      const lastPrice=lastTrade?(lastTrade.lastPrice||lastTrade.price||0):0;
+      // 이전 실거래가 (마지막 직전)
+      const prevTrade=cxTrades.length>1?cxTrades[cxTrades.length-2]:null;
+      const prevPrice=prevTrade?(prevTrade.lastPrice||prevTrade.price||0):0;
+      const delta=lastPrice&&prevPrice?lastPrice-prevPrice:0;
+      // 동적 현재가 (매물 첫번째 기준)
+      const firstListing=(allListings||[]).find(l=>l.complexId===cx.id&&l.status==="판매중");
+      const dp=firstListing?calcDynamicPrice(firstListing,allListings,complexes):null;
+      const dynamicPrice=dp?dp.price:0;
+      return{...cx,lastPrice,lastDate:lastTrade?.date||null,delta,tradeCnt:cxTrades.length,dynamicPrice,pct:dp?.pct||0};
+    });
+  },[complexes,trades,allListings]);
 
-  if(!ranked.length) return null;
+  const sorted=useMemo(()=>{
+    const arr=[...ranked];
+    if(sortKey==="lastTrade"){
+      // 실거래 있는 것 우선, 그 다음 동적가격 순
+      return arr.sort((a,b)=>{
+        if(b.lastPrice&&!a.lastPrice)return 1;
+        if(a.lastPrice&&!b.lastPrice)return -1;
+        return(b.lastPrice||b.dynamicPrice)-(a.lastPrice||a.dynamicPrice);
+      });
+    }
+    if(sortKey==="dynamic") return arr.sort((a,b)=>b.dynamicPrice-a.dynamicPrice);
+    if(sortKey==="name") return arr.sort((a,b)=>a.name.localeCompare(b.name,"ko"));
+    return arr;
+  },[ranked,sortKey]);
 
-  return h("div",{style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden",marginBottom:20}},
-    h("div",{
-      onClick:()=>setShow(s=>!s),
-      style:{padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",background:"linear-gradient(135deg,#0f172a,#1e3a5f)"}
-    },
-      h("div",{style:{display:"flex",alignItems:"center",gap:10}},
-        h("span",{style:{fontSize:20}},"🏆"),
-        h("div",null,
-          h("div",{style:{color:"#fff",fontWeight:800,fontSize:15}},"실거래가 단지 순위"),
-          h("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:11}},ranked.length+"개 단지 · 최근 실거래 기준")
-        )
-      ),
-      h("span",{style:{color:"rgba(255,255,255,0.6)",fontSize:18}},show?"▲":"▼")
+  return h("div",null,
+    // 정렬 버튼
+    h("div",{style:{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}},
+      ...[["lastTrade","🏆 실거래가순"],["dynamic","📈 현재시세순"],["name","가나다순"]].map(([k,label])=>
+        h(Btn,{key:k,onClick:()=>setSortKey(k),style:{padding:"6px 12px",borderRadius:8,border:`2px solid ${sortKey===k?"#1e40af":"#e2e8f0"}`,background:sortKey===k?"#dbeafe":"#fff",color:sortKey===k?"#1e40af":"#64748b",fontWeight:700,fontSize:12}},label)
+      )
     ),
-    show&&h("div",{style:{padding:"12px 0"}},
-      ...ranked.slice(0,10).map((cx,i)=>{
+    // 설명
+    h("div",{style:{fontSize:11,color:"#94a3b8",marginBottom:12}},
+      sortKey==="lastTrade"
+        ?"각 단지의 가장 마지막 실거래가 기준 · 실거래 없는 단지는 하단 표시"
+        :sortKey==="dynamic"?"현재 수급·시장 반영 동적 시세 기준"
+        :"단지명 가나다순"
+    ),
+    // 전체 목록
+    h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+      ...sorted.map((cx,i)=>{
         const info=DISTRICTS[cx.gu];
-        const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
-        const up=cx.delta>0,dn=cx.delta<0;
+        const medal=i===0&&cx.lastPrice?"🥇":i===1&&cx.lastPrice?"🥈":i===2&&cx.lastPrice?"🥉":null;
+        const up=cx.delta>0;
+        const hasPhoto=cx.photo;
         return h("div",{
           key:cx.id,
           onClick:()=>onSelectComplex&&onSelectComplex(cx),
-          style:{display:"flex",alignItems:"center",gap:12,padding:"10px 18px",borderBottom:i<ranked.length-1?"1px solid #f1f5f9":"none",cursor:"pointer",transition:"background 0.15s"},
-          onMouseEnter:e=>e.currentTarget.style.background="#f8fafc",
-          onMouseLeave:e=>e.currentTarget.style.background=""
+          style:{background:"#fff",borderRadius:14,overflow:"hidden",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",display:"flex",cursor:"pointer",transition:"transform 0.15s,box-shadow 0.15s"},
+          onMouseEnter:e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 6px 20px rgba(0,0,0,0.12)";},
+          onMouseLeave:e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="0 2px 10px rgba(0,0,0,0.07)";}
         },
-          // 순위
-          h("div",{style:{width:28,textAlign:"center",flexShrink:0}},
-            medal
-              ?h("span",{style:{fontSize:18}},medal)
-              :h("span",{style:{fontSize:13,fontWeight:800,color:"#94a3b8"}},i+1)
+          // 왼쪽 이미지/이모지
+          h("div",{style:{width:64,flexShrink:0,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}55)`:"#e2e8f0",position:"relative",overflow:"hidden"}},
+            hasPhoto
+              ?h("img",{src:cx.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}})
+              :h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}},cx.thumbnail||"🏠")
           ),
-          // 단지 아이콘
-          h("div",{style:{width:36,height:36,borderRadius:10,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}66)`:"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}},
-            cx.thumbnail||"🏠"
-          ),
-          // 단지 정보
-          h("div",{style:{flex:1,minWidth:0}},
-            h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},cx.name),
-            h("div",{style:{fontSize:11,color:"#94a3b8"}},cx.gu+" "+cx.dong+(cx.lastDate?" · "+cx.lastDate:""))
+          // 내용
+          h("div",{style:{flex:1,padding:"12px 14px",minWidth:0}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:4}},
+              medal&&h("span",{style:{fontSize:16}},medal),
+              !medal&&h("span",{style:{fontSize:12,fontWeight:800,color:"#94a3b8",minWidth:20}},i+1),
+              h(GuBadge,{gu:cx.gu}),
+              h("span",{style:{fontSize:11,color:"#94a3b8"}},cx.dong)
+            ),
+            h("div",{style:{fontWeight:700,fontSize:15,color:"#0f172a",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},cx.name),
+            h("div",{style:{fontSize:11,color:"#94a3b8"}},
+              cx.type+(cx.builder?" · "+cx.builder:"")+" · "+cx.totalUnits+"세대"+(cx.tradeCnt>0?" · 거래 "+cx.tradeCnt+"건":"")
+            )
           ),
           // 가격
-          h("div",{style:{textAlign:"right",flexShrink:0}},
-            h("div",{style:{fontSize:15,fontWeight:800,color:"#1e40af"}},fmt(cx.lastPrice)),
-            cx.delta!==0&&h("div",{style:{fontSize:10,fontWeight:700,color:up?"#dc2626":"#16a34a"}},
-              (up?"▲":"▼")+fmt(Math.abs(cx.delta))
-            )
+          h("div",{style:{padding:"12px 14px 12px 0",textAlign:"right",flexShrink:0,display:"flex",flexDirection:"column",justifyContent:"center"}},
+            cx.lastPrice>0
+              ?h(Fragment,null,
+                  h("div",{style:{fontSize:14,fontWeight:800,color:"#1e40af"}},fmt(cx.lastPrice)),
+                  h("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:2}},"실거래가"),
+                  cx.delta!==0&&h("div",{style:{fontSize:10,fontWeight:700,color:up?"#dc2626":"#16a34a"}},
+                    (up?"▲":"▼")+fmt(Math.abs(cx.delta))
+                  )
+                )
+              :cx.dynamicPrice>0
+                ?h(Fragment,null,
+                    h("div",{style:{fontSize:14,fontWeight:800,color:"#64748b"}},fmt(cx.dynamicPrice)),
+                    h("div",{style:{fontSize:10,color:"#94a3b8"}},"시세 추정")
+                  )
+                :h("div",{style:{fontSize:12,color:"#cbd5e1"}},"정보없음")
           )
         );
       })
@@ -995,6 +1033,7 @@ function UserApp({listings,complexes,trades,setTrades}){
   const [selL,setSelL]=useState(null);
   const [selCx,setSelCx]=useState(null);
   const [fromCxL,setFromCxL]=useState(null);
+  const scrollPos=useRef(0); // 목록 스크롤 위치 저장
 
   const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
 
@@ -1041,9 +1080,9 @@ function UserApp({listings,complexes,trades,setTrades}){
     return true;
   }),[complexes,selGus,selDong,propType,kw]);
 
-  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null),allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
-  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null),allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
-  if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>setSelCx(null),onListingClick:l=>{setFromCxL(l);setSelCx(null);},allComplexes:complexes,trades,onAddTrade:addTrade});}
+  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>{setFromCxL(null);requestAnimationFrame(()=>window.scrollTo({top:scrollPos.current,behavior:"instant"}));},allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
+  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>{setSelL(null);requestAnimationFrame(()=>window.scrollTo({top:scrollPos.current,behavior:"instant"}));},allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
+  if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>{setSelCx(null);requestAnimationFrame(()=>window.scrollTo({top:scrollPos.current,behavior:"instant"}));},onListingClick:l=>{scrollPos.current=window.scrollY;setFromCxL(l);setSelCx(null);},allComplexes:complexes,trades,onAddTrade:addTrade});}
 
   const tabS=v=>({flex:1,padding:"9px 0",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b",transition:"all 0.2s"});
   const guS=gu=>{const info=DISTRICTS[gu],isSel=selGus.includes(gu);return{padding:"5px 10px",border:`2px solid ${isSel?info.color:"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:isSel?info.color+"22":"#f8fafc",color:isSel?info.color:"#64748b"};};
@@ -1051,7 +1090,7 @@ function UserApp({listings,complexes,trades,setTrades}){
 
   return h("div",null,
     h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}},
-      ...["map","listings","complexes"].map((v,i)=>h(Btn,{key:v,onClick:()=>setTab(v),style:tabS(v)},["🗺️ 지도","🏠 매물","🏢 단지"][i]))
+      ...[["map","🗺️ 지도"],["listings","🏠 매물"],["complexes","🏢 단지"],["ranking","🏆 순위"]].map(([v,label])=>h(Btn,{key:v,onClick:()=>setTab(v),style:tabS(v)},label))
     ),
     tab==="map"&&h("div",null,
       h(CityMap,{selected:selGus,onSelect:gu=>{toggleGu(gu);setTimeout(()=>setTab("listings"),300);},counts}),
@@ -1073,15 +1112,15 @@ function UserApp({listings,complexes,trades,setTrades}){
       )
     ),
     tab==="listings"&&h("div",null,
-      h(ComplexRanking,{complexes,trades,allListings:listings,onSelectComplex:cx=>{setSelCx(cx);setTab("complexes");}}),
       h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtered.length),"건"),
-      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:setSelL,allListings:listings,allComplexes:complexes}))),
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:l=>{scrollPos.current=window.scrollY;setSelL(l);},allListings:listings,allComplexes:complexes}))),
       filtered.length===0&&h("div",{style:{textAlign:"center",padding:60,color:"#94a3b8"}},"해당 조건의 매물이 없습니다")
     ),
     tab==="complexes"&&h("div",null,
       h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtCx.length),"개"),
-      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:14}},...filtCx.map(c=>h(ComplexCard,{key:c.id,complex:c,listings,onClick:setSelCx})))
-    )
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:14}},...filtCx.map(c=>h(ComplexCard,{key:c.id,complex:c,listings,onClick:cx=>{scrollPos.current=window.scrollY;setSelCx(cx);}})))
+    ),
+    tab==="ranking"&&h(RankingTab,{complexes,trades,allListings:listings,onSelectComplex:cx=>{scrollPos.current=window.scrollY;setSelCx(cx);}})
   );
 }
 
