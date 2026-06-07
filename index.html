@@ -382,7 +382,7 @@ function LineChart({data,color,height=160,label}){
   const vals=data.map(d=>d.v);
   const min=Math.min(...vals),max=Math.max(...vals);
   const range=max-min||1;
-  const W=340,H=height,PAD={t:12,r:12,b:28,l:52};
+  const W=360,H=height,PAD={t:12,r:16,b:28,l:80}; // l:80으로 Y축 레이블 공간 확보
   const iw=W-PAD.l-PAD.r,ih=H-PAD.t-PAD.b;
   const px=(i)=>PAD.l+i/(data.length-1)*iw;
   const py=(v)=>PAD.t+ih-(v-min)/range*ih;
@@ -403,7 +403,11 @@ function LineChart({data,color,height=160,label}){
       // X축 레이블 (첫/중/끝)
       ...[0,Math.floor((data.length-1)/2),data.length-1].map(i=>h("text",{key:"x"+i,x:px(i),y:H-6,textAnchor:"middle",fontSize:9,fill:"#94a3b8"},data[i].label)),
       // Y축 레이블
-      ...yTicks.map((v,i)=>h("text",{key:"y"+i,x:PAD.l-4,y:py(v)+4,textAnchor:"end",fontSize:9,fill:"#64748b"},fmt(v)))
+      ...yTicks.map((v,i)=>{
+        // 억 단위는 "X억" 짧게, 만단위는 "X만" 짧게
+        const label=v>=100000000?Math.round(v/100000000*10)/10+"억":v>=10000?Math.round(v/1000)/10+"천만":fmt(v);
+        return h("text",{key:"y"+i,x:PAD.l-6,y:py(v)+4,textAnchor:"end",fontSize:8,fill:"#64748b"},label);
+      })
     )
   );
 }
@@ -841,7 +845,7 @@ function ListingDetail({listing,complex,onBack,allListings,allComplexes,trades,o
       ),
       h("p",{style:{fontSize:14,color:"#475569",lineHeight:1.7,marginBottom:16}},listing.description),
       h("div",{style:{marginBottom:16}},
-        h("div",{style:{fontWeight:700,fontSize:13,color:"#0f172a",marginBottom:6}},`단지 — ${complex?.totalUnits}세대 · ${complex?.floors}층 · ${complex?.year}년`),
+        h("div",{style:{fontWeight:700,fontSize:13,color:"#0f172a",marginBottom:6}},`단지 — ${complex?.totalUnits}세대 · ${complex?.floors}층 · ${String(complex?.year||"-")}${complex?.builder?" · "+complex.builder:""}`),
         h("div",{style:{display:"flex",flexWrap:"wrap",gap:5}},...(complex?.amenities||[]).map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a)))
       ),
       h(Btn,{style:{width:"100%",background:info?`linear-gradient(135deg,${info.color},${info.color}bb)`:"#1e40af",color:"#fff",borderRadius:12,padding:"14px 0",fontSize:15,fontWeight:700}},"📞 문의하기"),
@@ -864,7 +868,7 @@ function ComplexCard({complex,listings,onClick}){
       h("div",{style:{fontWeight:700,fontSize:15,color:"#0f172a",marginBottom:2}},complex.name),
       h("div",{style:{fontSize:11,color:"#94a3b8",marginBottom:6}},`${complex.dong} · ${complex.totalUnits}세대 · ${complex.floors}층`),
       h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12}},
-        h("span",{style:{color:"#94a3b8"}},complex.year+"년"),
+        h("span",{style:{color:"#94a3b8"}},String(complex.year||"-")),
         h("span",{style:{color:cnt>0?"#1e40af":"#94a3b8",fontWeight:700}},"매물 "+cnt+"건")
       )
     )
@@ -886,7 +890,7 @@ function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trad
       )
     ),
     h("div",{style:{display:"flex",gap:18,background:"#fff",borderRadius:12,padding:16,marginBottom:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}},
-      ...[["총세대",complex.totalUnits+"세대"],["층수",complex.floors+"층"],["준공",complex.year+"년"]].map(([k,v])=>
+      ...[["총세대",complex.totalUnits+"세대"],["층수",complex.floors+"층"],["준공",String(complex.year||"-")]].map(([k,v])=>
         h("div",{key:k},h("div",{style:{fontSize:10,color:"#94a3b8"}},k),h("div",{style:{fontSize:14,fontWeight:700,color:"#0f172a"}},v))
       )
     ),
@@ -904,6 +908,79 @@ function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trad
       ))
     ),
     h(ComplexMarketPanel,{complex,allListings:listings,complexes:allComplexes,trades})
+  );
+}
+
+
+// ── 실거래가 단지 순위 컴포넌트 ────────────────────────────────────────────
+function ComplexRanking({complexes,trades,allListings,onSelectComplex}){
+  const [show,setShow]=useState(false);
+
+  const ranked=useMemo(()=>{
+    return complexes.map(cx=>{
+      const cxTrades=(trades||[]).filter(t=>t.complexId===cx.id);
+      const lastTrade=cxTrades.slice(-1)[0]||null;
+      const prevTrade=cxTrades.slice(-2)[0]||null;
+      const delta=lastTrade&&prevTrade?lastTrade.price-prevTrade.price:0;
+      return{...cx,lastPrice:lastTrade?.lastPrice||0,lastDate:lastTrade?.date||null,delta,tradeCnt:cxTrades.length};
+    })
+    .filter(cx=>cx.lastPrice>0)
+    .sort((a,b)=>b.lastPrice-a.lastPrice);
+  },[complexes,trades]);
+
+  if(!ranked.length) return null;
+
+  return h("div",{style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden",marginBottom:20}},
+    h("div",{
+      onClick:()=>setShow(s=>!s),
+      style:{padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",background:"linear-gradient(135deg,#0f172a,#1e3a5f)"}
+    },
+      h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+        h("span",{style:{fontSize:20}},"🏆"),
+        h("div",null,
+          h("div",{style:{color:"#fff",fontWeight:800,fontSize:15}},"실거래가 단지 순위"),
+          h("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:11}},ranked.length+"개 단지 · 최근 실거래 기준")
+        )
+      ),
+      h("span",{style:{color:"rgba(255,255,255,0.6)",fontSize:18}},show?"▲":"▼")
+    ),
+    show&&h("div",{style:{padding:"12px 0"}},
+      ...ranked.slice(0,10).map((cx,i)=>{
+        const info=DISTRICTS[cx.gu];
+        const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
+        const up=cx.delta>0,dn=cx.delta<0;
+        return h("div",{
+          key:cx.id,
+          onClick:()=>onSelectComplex&&onSelectComplex(cx),
+          style:{display:"flex",alignItems:"center",gap:12,padding:"10px 18px",borderBottom:i<ranked.length-1?"1px solid #f1f5f9":"none",cursor:"pointer",transition:"background 0.15s"},
+          onMouseEnter:e=>e.currentTarget.style.background="#f8fafc",
+          onMouseLeave:e=>e.currentTarget.style.background=""
+        },
+          // 순위
+          h("div",{style:{width:28,textAlign:"center",flexShrink:0}},
+            medal
+              ?h("span",{style:{fontSize:18}},medal)
+              :h("span",{style:{fontSize:13,fontWeight:800,color:"#94a3b8"}},i+1)
+          ),
+          // 단지 아이콘
+          h("div",{style:{width:36,height:36,borderRadius:10,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}66)`:"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}},
+            cx.thumbnail||"🏠"
+          ),
+          // 단지 정보
+          h("div",{style:{flex:1,minWidth:0}},
+            h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},cx.name),
+            h("div",{style:{fontSize:11,color:"#94a3b8"}},cx.gu+" "+cx.dong+(cx.lastDate?" · "+cx.lastDate:""))
+          ),
+          // 가격
+          h("div",{style:{textAlign:"right",flexShrink:0}},
+            h("div",{style:{fontSize:15,fontWeight:800,color:"#1e40af"}},fmt(cx.lastPrice)),
+            cx.delta!==0&&h("div",{style:{fontSize:10,fontWeight:700,color:up?"#dc2626":"#16a34a"}},
+              (up?"▲":"▼")+fmt(Math.abs(cx.delta))
+            )
+          )
+        );
+      })
+    )
   );
 }
 
@@ -931,7 +1008,7 @@ function UserApp({listings,complexes,trades,setTrades}){
     const delta=last?price-last.price:0;
     const now=new Date();
     const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
-    const newTrade={id:Date.now(),complexId:cxId,price,delta,date:dateStr};
+    const newTrade={id:Date.now(),complexId:cxId,price,lastPrice:price,delta,date:dateStr};
     const updated=[...(trades||[]),newTrade];
     setTrades(updated);
     saveTrades(updated);
@@ -996,6 +1073,7 @@ function UserApp({listings,complexes,trades,setTrades}){
       )
     ),
     tab==="listings"&&h("div",null,
+      h(ComplexRanking,{complexes,trades,allListings:listings,onSelectComplex:cx=>{setSelCx(cx);setTab("complexes");}}),
       h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtered.length),"건"),
       h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:setSelL,allListings:listings,allComplexes:complexes}))),
       filtered.length===0&&h("div",{style:{textAlign:"center",padding:60,color:"#94a3b8"}},"해당 조건의 매물이 없습니다")
@@ -1033,8 +1111,8 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
   const [showDone,setShowDone]=useState(false);
   const {confirm,alert,Modal}=useDialog();
 
-  const emptyL={complexId:"",unit:"",type:"매매",price:"",deposit:"",monthly:"",size:"",rooms:1,baths:1,floor:"",direction:"남향",status:"판매중",description:"",photos:[]};
-  const emptyC={name:"",gu:"청해구",dong:"",address:"",type:"아파트",totalUnits:"",floors:"",year:"",amenities:"",thumbnail:"🏠",photo:null};
+  const emptyL={complexId:"",unit:"",type:"매매",price:"",deposit:"",monthly:"",size:"",rooms:1,baths:1,floor:"",direction:"남향",status:"판매중",description:"",photos:[],regCount:1};
+  const emptyC={name:"",gu:"청해구",dong:"",address:"",type:"아파트",totalUnits:"",floors:"",year:"",amenities:"",thumbnail:"🏠",photo:null,builder:""};
   const [lForm,setLForm]=useState(emptyL);
   const [cForm,setCForm]=useState(emptyC);
 
@@ -1057,14 +1135,23 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
       registeredAt:new Date().toISOString().split("T")[0]
     };
     let updated;
-    if(editItem)updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
-    else updated=[...listings,{...d,id:Date.now()}];
+    if(editItem){
+      updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
+    } else {
+      const count=Math.max(1,Math.min(50,Number(lForm.regCount)||1));
+      const newItems=Array.from({length:count},(_,i)=>({
+        ...d,
+        id:Date.now()+i,
+        unit:count>1?(d.unit?d.unit+"-"+(i+1):String(i+1)+"호"):d.unit,
+      }));
+      updated=[...listings,...newItems];
+    }
     setListings(updated);
     saveAll(complexes,updated).then(()=>console.log("매물 저장완료"));
     setShowForm(false);
   };
   const saveC=()=>{
-    const d={...cForm,totalUnits:Number(cForm.totalUnits),floors:Number(cForm.floors),year:Number(cForm.year),amenities:cForm.amenities.split(",").map(s=>s.trim()).filter(Boolean)};
+    const d={...cForm,totalUnits:Number(cForm.totalUnits),floors:Number(cForm.floors),year:cForm.year,amenities:cForm.amenities.split(",").map(s=>s.trim()).filter(Boolean)};
     let updated;
     if(editItem)updated=complexes.map(c=>c.id===editItem.id?{...d,id:editItem.id}:c);
     else updated=[...complexes,{...d,id:Date.now()}];
@@ -1156,8 +1243,12 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
         h(PhotoUpload,{current:lForm.photos&&lForm.photos.length>0,label:"사진 추가",multi:true,onUpload:async(b64s)=>{const merged=[...(lForm.photos||[]),...b64s].slice(0,5);setLForm(f=>({...f,photos:merged}));}}),
         h(PhotoGrid,{photos:lForm.photos,onRemove:i=>setLForm(f=>({...f,photos:f.photos.filter((_,j)=>j!==i)}))})
       )),
+      !editItem&&fld("등록 개수",h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+        h("input",{type:"number",min:1,max:50,value:lForm.regCount,onChange:e=>setLForm(f=>({...f,regCount:Math.max(1,Math.min(50,Number(e.target.value)||1))})),style:{...iS,width:80}}),
+        h("span",{style:{fontSize:12,color:"#64748b"}},"개 (같은 조건으로 "+lForm.regCount+"개 등록됩니다)")
+      )),
       h("div",{style:{display:"flex",gap:10,marginTop:6}},
-        h(Btn,{onClick:saveL,style:{flex:1,background:"#dc2626",color:"#fff",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"저장"),
+        h(Btn,{onClick:saveL,style:{flex:1,background:"#dc2626",color:"#fff",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},editItem?"수정 저장":"매물 "+lForm.regCount+"개 등록"),
         h(Btn,{onClick:()=>setShowForm(false),style:{flex:1,background:"#f1f5f9",color:"#475569",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"취소")
       )
     ),
@@ -1179,7 +1270,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
             h("div",{style:{flex:1,padding:12}},
               h("div",{style:{display:"flex",gap:5,marginBottom:3}},h(GuBadge,{gu:c.gu}),h(Badge,null,c.type)),
               h("div",{style:{fontWeight:700,color:"#0f172a"}},c.name),
-              h("div",{style:{fontSize:12,color:"#64748b"}},`${c.dong} · ${c.totalUnits}세대 · 매물 ${cnt}건`)
+              h("div",{style:{fontSize:12,color:"#64748b"}},`${c.dong} · ${c.totalUnits}세대${c.builder?" · "+c.builder:""} · 매물 ${cnt}건`)
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
               h(Btn,{onClick:()=>{setCForm({...c,amenities:c.amenities.join(", ")});setEditItem(c);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
@@ -1198,6 +1289,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     tab==="complexes"&&showForm&&h("div",{style:{background:"#fff",borderRadius:16,padding:22,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}},
       h("div",{style:{fontWeight:800,fontSize:16,color:"#0f172a",marginBottom:16}},editItem?"단지 수정":"새 단지 등록"),
       fld("단지명",h("input",{value:cForm.name,onChange:e=>setCForm(f=>({...f,name:e.target.value})),placeholder:"예: 오션뷰 아파트",style:iS})),
+      fld("건설사",h("input",{value:cForm.builder||"",onChange:e=>setCForm(f=>({...f,builder:e.target.value})),placeholder:"예: 가상건설",style:iS})),
       fld("이모지 아이콘 (사진이 없을 때)",h("input",{value:cForm.thumbnail,onChange:e=>setCForm(f=>({...f,thumbnail:e.target.value})),style:iS})),
       fld("대표 사진",h("div",null,
         cForm.photo&&h("img",{src:cForm.photo,alt:"",style:{width:"100%",height:140,objectFit:"cover",borderRadius:10,marginBottom:8}}),
@@ -1211,7 +1303,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
       h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}},
         fld("총세대",h("input",{type:"number",value:cForm.totalUnits,onChange:e=>setCForm(f=>({...f,totalUnits:e.target.value})),style:iS})),
         fld("층수",h("input",{type:"number",value:cForm.floors,onChange:e=>setCForm(f=>({...f,floors:e.target.value})),style:iS})),
-        fld("준공년도",h("input",{type:"number",value:cForm.year,onChange:e=>setCForm(f=>({...f,year:e.target.value})),placeholder:"2024",style:iS}))
+        fld("준공연도",h("input",{type:"text",value:cForm.year,onChange:e=>setCForm(f=>({...f,year:e.target.value})),placeholder:"예: 2024년 또는 예정",style:iS}))
       ),
       fld("편의시설 (쉼표 구분)",h("input",{value:cForm.amenities,onChange:e=>setCForm(f=>({...f,amenities:e.target.value})),placeholder:"수영장, 헬스장, 주차장",style:iS})),
       h("div",{style:{display:"flex",gap:10,marginTop:6}},
