@@ -93,41 +93,70 @@ const DEFAULT_LISTINGS=[
 
 // ── 헬퍼 ────────────────────────────────────────────────────────────────────
 const fmt=w=>w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;
-// ── 동적 가격 엔진 ───────────────────────────────────────────────────────────
-function calcDynamicPrice(listing, allListings, complexes){
-  if(!listing||!allListings||!complexes) return null;
-  const complex=complexes.find(c=>c.id===listing.complexId);
-  if(!complex) return null;
 
-  // 같은 단지+거래유형 판매중 매물 수
-  const sameActive=allListings.filter(l=>
-    l.complexId===listing.complexId && l.type===listing.type && l.status==="판매중"
-  ).length;
+// ─────────────────────────────────────────────────────────────────────────────
+// ── 동적 가격 + 대출 엔진 ─────────────────────────────────────────────────────
+const LS_TRADES="vrc_trades"; // 실거래 내역
 
-  // 같은 구 전체 판매중 매물 수
-  const guIds=complexes.filter(c=>c.gu===complex.gu).map(c=>c.id);
-  const guActive=allListings.filter(l=>guIds.includes(l.complexId)&&l.status==="판매중").length;
-
-  // 등록일 경과일
-  const daysSince=Math.max(0,Math.floor((Date.now()-new Date(listing.registeredAt||Date.now()))/(86400000)));
-
-  // 수급 압력 계산
-  const supplyP=-(sameActive-1)*0.018;  // 매물 추가될수록 -1.8%씩
-  const guP=-(guActive-5)*0.004;         // 구 전체 과잉시 추가 하락
-  const timeP=daysSince>30?-(daysSince-30)*0.0003:daysSince*0.0004; // 30일전=상승, 이후=하락
-
-  const pct=Math.max(-0.25,Math.min(0.20,supplyP+guP+timeP));
-  const adj=v=>v!=null?Math.round(v*(1+pct)/100)*100:null;
-  return {
-    price:adj(listing.price)||listing.price,
-    deposit:adj(listing.deposit),
-    monthly:listing.monthly?Math.round(listing.monthly*(1+pct)):null,
-    pct:Math.round(pct*1000)/10
-  };
+// 시장 지수 계산 (0~1, 높을수록 과열)
+function marketIndex(allListings,complexes){
+  const active=allListings.filter(l=>l.status==="판매중").length;
+  const total=allListings.length||1;
+  const supplyRatio=active/total; // 공급 많으면 냉각
+  return Math.max(0,Math.min(1, 1-supplyRatio*0.8));
 }
 
+// 동적 가격 계산
+function calcDynamicPrice(listing,allListings,complexes){
+  if(!listing||!allListings||!complexes)return null;
+  const complex=complexes.find(c=>c.id===listing.complexId);
+  if(!complex)return null;
+  const sameActive=allListings.filter(l=>l.complexId===listing.complexId&&l.type===listing.type&&l.status==="판매중").length;
+  const guIds=complexes.filter(c=>c.gu===complex.gu).map(c=>c.id);
+  const guActive=allListings.filter(l=>guIds.includes(l.complexId)&&l.status==="판매중").length;
+  const daysSince=Math.max(0,Math.floor((Date.now()-new Date(listing.registeredAt||Date.now()))/86400000));
+  const supplyP=-(sameActive-1)*0.018;
+  const guP=-(guActive-5)*0.004;
+  const timeP=daysSince>30?-(daysSince-30)*0.0003:daysSince*0.0004;
+  // 대출 환경도 가격에 반영
+  const mi=marketIndex(allListings,complexes);
+  const loanBoost=(mi-0.5)*0.06; // 시장 과열시 가격 상승 압력
+  const pct=Math.max(-0.25,Math.min(0.20,supplyP+guP+timeP+loanBoost));
+  const adj=v=>v!=null?Math.round(v*(1+pct)/100)*100:null;
+  return{price:adj(listing.price)||listing.price,deposit:adj(listing.deposit),monthly:listing.monthly?Math.round(listing.monthly*(1+pct)):null,pct:Math.round(pct*1000)/10};
+}
+
+// 대출 조건 자동 계산
+function calcLoanCondition(price,tradeType,allListings,complexes){
+  const mi=marketIndex(allListings||[],complexes||[]);
+  // 금리: 시장 과열 → 높음(6%), 냉각 → 낮음(2%)
+  const rate=2+mi*4; // 2~6%
+  // LTV: 가격 높을수록 낮게, 시장 과열시 낮게
+  let maxLtv;
+  if(tradeType==="전세"){
+    maxLtv=Math.round((0.80-mi*0.20)*100); // 60~80%
+  } else {
+    // 매매: 가격 구간별 + 시장지수 반영
+    const priceB=price/10000; // 억 단위
+    let baseLtv=priceB<5?0.90:priceB<10?0.80:priceB<20?0.70:priceB<30?0.60:0.50;
+    maxLtv=Math.round((baseLtv-mi*0.15)*100);
+  }
+  maxLtv=Math.max(40,Math.min(90,maxLtv));
+  return{rate:Math.round(rate*10)/10,maxLtv,mi:Math.round(mi*100)};
+}
+
+// 월 상환액 계산 (원리금균등)
+function calcMonthly(principal,annualRate,years){
+  if(!principal||!annualRate||!years)return 0;
+  const r=annualRate/100/12;
+  const n=years*12;
+  if(r===0)return Math.round(principal/n);
+  return Math.round(principal*(r*Math.pow(1+r,n))/(Math.pow(1+r,n)-1));
+}
+
+// 가격 태그 (▲▼)
 function PriceTag({pct}){
-  if(!pct||Math.abs(pct)<0.3) return null;
+  if(!pct||Math.abs(pct)<0.3)return null;
   const up=pct>0;
   return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,
     background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a",marginLeft:5,verticalAlign:"middle"}},
@@ -135,21 +164,253 @@ function PriceTag({pct}){
   );
 }
 
-function priceLabel(listing, allListings, complexes){
+function priceLabel(listing,allListings,complexes){
   const dp=(allListings&&complexes)?calcDynamicPrice(listing,allListings,complexes):null;
   const p=dp||listing;
   const base=listing.type==="월세"
     ?`보 ${fmt(p.deposit!=null?p.deposit:listing.deposit)} / 월 ${p.monthly!=null?p.monthly:listing.monthly}만`
     :fmt(p.price!=null?p.price:listing.price);
-  if(!dp||Math.abs(dp.pct)<0.3) return base;
+  if(!dp||Math.abs(dp.pct)<0.3)return base;
   return h(Fragment,null,base,h(PriceTag,{pct:dp.pct}));
 }
 
-// 단지 선택 드롭다운 라벨 — 오피스텔(오), 빌라(빌) 표시
 function complexLabel(c){
   const tag=c.type==="오피스텔"?" (오)":c.type==="빌라"?" (빌)":"";
   return c.name+tag+" — "+c.gu+" "+c.dong;
 }
+
+// ── 꺾은선 그래프 (SVG) ──────────────────────────────────────────────────────
+function LineChart({data,color,height=160,label}){
+  if(!data||data.length<2)return h("div",{style:{textAlign:"center",padding:30,color:"#94a3b8",fontSize:12}},"데이터 수집 중...");
+  const vals=data.map(d=>d.v);
+  const min=Math.min(...vals),max=Math.max(...vals);
+  const range=max-min||1;
+  const W=340,H=height,PAD={t:12,r:12,b:28,l:52};
+  const iw=W-PAD.l-PAD.r,ih=H-PAD.t-PAD.b;
+  const px=(i)=>PAD.l+i/(data.length-1)*iw;
+  const py=(v)=>PAD.t+ih-(v-min)/range*ih;
+  const pts=data.map((d,i)=>`${px(i)},${py(d.v)}`).join(" ");
+  const fillPts=`${PAD.l},${PAD.t+ih} `+data.map((d,i)=>`${px(i)},${py(d.v)}`).join(" ")+` ${PAD.l+iw},${PAD.t+ih}`;
+  // Y축 레이블 3개
+  const yTicks=[min,min+range/2,max];
+  return h("div",{style:{overflowX:"auto"}},
+    h("svg",{viewBox:`0 0 ${W} ${H}`,style:{width:"100%",minWidth:260,display:"block"}},
+      // 배경 그리드
+      ...[0,0.5,1].map(t=>h("line",{key:t,x1:PAD.l,y1:PAD.t+ih*(1-t),x2:PAD.l+iw,y2:PAD.t+ih*(1-t),stroke:"#e2e8f0",strokeWidth:1,strokeDasharray:"4,4"})),
+      // 채우기
+      h("polygon",{points:fillPts,fill:color+"22",stroke:"none"}),
+      // 꺾은선
+      h("polyline",{points:pts,fill:"none",stroke:color,strokeWidth:2.5,strokeLinejoin:"round",strokeLinecap:"round"}),
+      // 데이터 포인트
+      ...data.map((d,i)=>h("circle",{key:i,cx:px(i),cy:py(d.v),r:3.5,fill:"#fff",stroke:color,strokeWidth:2})),
+      // X축 레이블 (첫/중/끝)
+      ...[0,Math.floor((data.length-1)/2),data.length-1].map(i=>h("text",{key:"x"+i,x:px(i),y:H-6,textAnchor:"middle",fontSize:9,fill:"#94a3b8"},data[i].label)),
+      // Y축 레이블
+      ...yTicks.map((v,i)=>h("text",{key:"y"+i,x:PAD.l-4,y:py(v)+4,textAnchor:"end",fontSize:9,fill:"#64748b"},fmt(v)))
+    )
+  );
+}
+
+// 시세 이력 생성 (가상 과거 데이터 + 실거래 포함)
+function buildPriceHistory(listing,allListings,complexes,trades){
+  if(!listing)return[];
+  const base=listing.price||listing.deposit||0;
+  const dp=calcDynamicPrice(listing,allListings,complexes);
+  const now=dp?dp.price:base;
+  // 가상 6개월 이력 생성 (등록일 기준 역산)
+  const months=["1월","2월","3월","4월","5월","6월","현재"];
+  const seed=listing.id*7+base;
+  const pts=months.map((label,i)=>{
+    if(i===months.length-1)return{label,v:now};
+    const noise=((seed*(i+1)*1234567)%100-50)/1000;
+    const trend=(i-3)*0.005;
+    return{label,v:Math.round(base*(1+trend+noise)/100)*100};
+  });
+  // 실거래 기록 덮어쓰기
+  const myTrades=(trades||[]).filter(t=>t.listingId===listing.id).slice(-3);
+  myTrades.forEach((t,i)=>{
+    const idx=Math.max(0,pts.length-3+i);
+    pts[idx]={label:t.date,v:t.price};
+  });
+  return pts;
+}
+
+// 단지 평균 시세 이력
+function buildComplexPriceHistory(complex,allListings,complexes,trades){
+  const cxListings=allListings.filter(l=>l.complexId===complex.id&&l.type==="매매");
+  if(!cxListings.length)return[];
+  const months=["1월","2월","3월","4월","5월","6월","현재"];
+  return months.map((label,i)=>{
+    const avg=cxListings.reduce((s,l)=>{
+      const base=l.price||0;
+      const seed=l.id*7+base;
+      const noise=((seed*(i+1)*1234567)%100-50)/1000;
+      const trend=(i-3)*0.005;
+      const v=i===months.length-1?(calcDynamicPrice(l,allListings,complexes)?.price||base):Math.round(base*(1+trend+noise)/100)*100;
+      return s+v;
+    },0)/cxListings.length;
+    return{label,v:Math.round(avg/100)*100};
+  });
+}
+
+// ── 실거래 내역 컴포넌트 ─────────────────────────────────────────────────────
+function TradeHistory({listingId,trades,color}){
+  const myTrades=(trades||[]).filter(t=>t.listingId===listingId).slice().reverse();
+  if(!myTrades.length)return h("div",{style:{textAlign:"center",padding:"16px 0",color:"#94a3b8",fontSize:12}},"실거래 내역 없음");
+  return h("div",{style:{display:"flex",flexDirection:"column",gap:6}},
+    ...myTrades.map((t,i)=>h("div",{key:i,style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#f8fafc",borderRadius:8,borderLeft:`3px solid ${color}`}},
+      h("div",null,
+        h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},fmt(t.price)),
+        h("div",{style:{fontSize:10,color:"#94a3b8"}},t.date)
+      ),
+      h("div",{style:{fontSize:11,fontWeight:600,color:t.delta>0?"#dc2626":"#16a34a"}},
+        t.delta>0?"▲"+fmt(t.delta)+" 상승":"▼"+fmt(Math.abs(t.delta))+" 하락"
+      )
+    ))
+  );
+}
+
+// ── 대출 계산기 컴포넌트 ─────────────────────────────────────────────────────
+function LoanCalc({listing,allListings,complexes}){
+  const dp=calcDynamicPrice(listing,allListings,complexes);
+  const currentPrice=(listing.type==="월세"?listing.deposit:dp?.price||listing.price)||0;
+  const tradeType=listing.type==="전세"?"전세":"매매";
+  const cond=calcLoanCondition(currentPrice,tradeType,allListings,complexes);
+
+  const [ltvPct,setLtvPct]=useState(Math.round(cond.maxLtv*0.7));
+  const [years,setYears]=useState(30);
+  const loanAmt=Math.round(currentPrice*ltvPct/100/100)*100;
+  const monthly=calcMonthly(loanAmt*10000,cond.rate,years); // 만원→원
+
+  const mktColor=cond.mi>66?"#ef4444":cond.mi>33?"#f59e0b":"#10b981";
+  const mktLabel=cond.mi>66?"과열":"정상";
+
+  return h("div",{style:{background:"#f8fafc",borderRadius:14,padding:18}},
+    // 시장 현황
+    h("div",{style:{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}},
+      h("div",{style:{flex:1,background:"#fff",borderRadius:10,padding:"10px 14px",minWidth:100}},
+        h("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:2}},"현재 시세"),
+        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},fmt(currentPrice))
+      ),
+      h("div",{style:{flex:1,background:"#fff",borderRadius:10,padding:"10px 14px",minWidth:100}},
+        h("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:2}},"자동 금리"),
+        h("div",{style:{fontSize:16,fontWeight:800,color:"#dc2626"}},cond.rate+"%")
+      ),
+      h("div",{style:{flex:1,background:"#fff",borderRadius:10,padding:"10px 14px",minWidth:80}},
+        h("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:2}},"시장"),
+        h("div",{style:{fontSize:14,fontWeight:800,color:mktColor}},mktLabel),
+        h("div",{style:{fontSize:10,color:"#94a3b8"}},cond.mi+"%")
+      )
+    ),
+    // LTV 슬라이더
+    h("div",{style:{marginBottom:14}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}},
+        h("span",{style:{fontWeight:600,color:"#475569"}},"대출 비율"),
+        h("span",{style:{fontWeight:800,color:"#1e40af"}},ltvPct+"% (최대 "+cond.maxLtv+"%)")
+      ),
+      h("input",{type:"range",min:10,max:cond.maxLtv,value:ltvPct,onChange:e=>setLtvPct(Number(e.target.value)),
+        style:{width:"100%",accentColor:"#1e40af"}})
+    ),
+    // 대출 기간
+    h("div",{style:{marginBottom:16}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}},
+        h("span",{style:{fontWeight:600,color:"#475569"}},"대출 기간"),
+        h("span",{style:{fontWeight:800,color:"#1e40af"}},years+"년")
+      ),
+      h("div",{style:{display:"flex",gap:6}},
+        ...[10,15,20,30].map(y=>h(Btn,{key:y,onClick:()=>setYears(y),style:{flex:1,padding:"7px 0",borderRadius:8,border:`2px solid ${years===y?"#1e40af":"#e2e8f0"}`,background:years===y?"#dbeafe":"#fff",color:years===y?"#1e40af":"#64748b",fontWeight:700,fontSize:12}},y+"년"))
+      )
+    ),
+    // 결과
+    h("div",{style:{background:"linear-gradient(135deg,#1e40af,#3b82f6)",borderRadius:12,padding:18,color:"#fff"}},
+      h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}},
+        h("div",null,
+          h("div",{style:{fontSize:10,color:"rgba(255,255,255,0.7)",marginBottom:2}},"대출 금액"),
+          h("div",{style:{fontSize:18,fontWeight:900}},fmt(loanAmt))
+        ),
+        h("div",null,
+          h("div",{style:{fontSize:10,color:"rgba(255,255,255,0.7)",marginBottom:2}},"월 상환액"),
+          h("div",{style:{fontSize:18,fontWeight:900}},monthly.toLocaleString()+"원")
+        ),
+        h("div",null,
+          h("div",{style:{fontSize:10,color:"rgba(255,255,255,0.7)",marginBottom:2}},"총 이자"),
+          h("div",{style:{fontSize:14,fontWeight:700}},fmt(Math.round((monthly*years*12-loanAmt*10000)/10000)*10000))
+        ),
+        h("div",null,
+          h("div",{style:{fontSize:10,color:"rgba(255,255,255,0.7)",marginBottom:2}},"자기자본"),
+          h("div",{style:{fontSize:14,fontWeight:700}},fmt(currentPrice-loanAmt))
+        )
+      )
+    ),
+    h("div",{style:{fontSize:10,color:"#94a3b8",marginTop:8,textAlign:"center"}},"* 금리·LTV는 시장 상황에 따라 자동 조정됩니다")
+  );
+}
+
+// ── 시세/실거래/대출 통합 패널 ───────────────────────────────────────────────
+function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade}){
+  const [tab,setTab]=useState("chart");
+  const color=complex?DISTRICTS[complex.gu]?.color:"#1e40af";
+  const chartData=buildPriceHistory(listing,allListings,complexes,trades);
+  const showLoan=listing.type!=="월세";
+
+  return h("div",{style:{background:"#fff",borderRadius:16,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",marginTop:16}},
+    // 탭
+    h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:10,padding:3,marginBottom:16}},
+      ...([["chart","📈 시세"],["trades","📋 실거래"],showLoan&&["loan","🏦 대출"]].filter(Boolean)).map(([v,label])=>
+        h(Btn,{key:v,onClick:()=>setTab(v),style:{flex:1,padding:"7px 0",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b"}},label)
+      )
+    ),
+    tab==="chart"&&h("div",null,
+      h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"최근 6개월 시세 추이"),
+      h(LineChart,{data:chartData,color,height:160})
+    ),
+    tab==="trades"&&h("div",null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
+        h("span",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},"실거래 내역"),
+        h(Btn,{onClick:()=>onAddTrade(listing),style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
+      ),
+      h(TradeHistory,{listingId:listing.id,trades,color})
+    ),
+    showLoan&&tab==="loan"&&h(LoanCalc,{listing,allListings,complexes})
+  );
+}
+
+// ── 단지 시세 패널 ────────────────────────────────────────────────────────────
+function ComplexMarketPanel({complex,allListings,complexes,trades}){
+  const color=DISTRICTS[complex.gu]?.color||"#1e40af";
+  const chartData=buildComplexPriceHistory(complex,allListings,complexes,trades);
+  const cxTrades=(trades||[]).filter(t=>{const l=allListings.find(x=>x.id===t.listingId);return l&&l.complexId===complex.id;}).slice().reverse().slice(0,8);
+  const [tab,setTab]=useState("chart");
+
+  return h("div",{style:{background:"#fff",borderRadius:16,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",marginTop:16}},
+    h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:10,padding:3,marginBottom:16}},
+      ...[["chart","📈 단지 시세"],["trades","📋 실거래"]].map(([v,label])=>
+        h(Btn,{key:v,onClick:()=>setTab(v),style:{flex:1,padding:"7px 0",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b"}},label)
+      )
+    ),
+    tab==="chart"&&h("div",null,
+      h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"단지 매매가 평균 추이"),
+      chartData.length>=2?h(LineChart,{data:chartData,color,height:160}):h("div",{style:{textAlign:"center",padding:30,color:"#94a3b8",fontSize:12}},"매매 매물이 없습니다")
+    ),
+    tab==="trades"&&h("div",null,
+      h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"단지 전체 실거래 내역"),
+      cxTrades.length===0?h("div",{style:{textAlign:"center",padding:20,color:"#94a3b8",fontSize:12}},"실거래 내역 없음"):
+      h("div",{style:{display:"flex",flexDirection:"column",gap:6}},
+        ...cxTrades.map((t,i)=>{
+          const l=allListings.find(x=>x.id===t.listingId);
+          return h("div",{key:i,style:{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:"#f8fafc",borderRadius:8,borderLeft:`3px solid ${color}`}},
+            h("div",null,
+              h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},fmt(t.price)+" · "+(l?.unit||"")),
+              h("div",{style:{fontSize:10,color:"#94a3b8"}},t.date)
+            ),
+            h("span",{style:{fontSize:11,fontWeight:600,color:t.delta>0?"#dc2626":"#16a34a"}},t.delta>0?"▲"+fmt(t.delta):"▼"+fmt(Math.abs(t.delta)))
+          );
+        })
+      )
+    )
+  );
+}
+
 
 // base64 이미지 변환
 function fileToBase64(file){
@@ -328,7 +589,7 @@ function ListingCard({listing,complex,onClick,allListings,allComplexes}){
   );
 }
 
-function ListingDetail({listing,complex,onBack,allListings,allComplexes}){
+function ListingDetail({listing,complex,onBack,allListings,allComplexes,trades,onAddTrade}){
   const info=DISTRICTS[complex?.gu];
   return h("div",{style:{maxWidth:640,margin:"0 auto",background:"#fff",borderRadius:20,overflow:"hidden",boxShadow:"0 4px 24px rgba(0,0,0,0.1)"}},
     h("div",{style:{position:"relative"}},
@@ -350,7 +611,8 @@ function ListingDetail({listing,complex,onBack,allListings,allComplexes}){
         h("div",{style:{fontWeight:700,fontSize:13,color:"#0f172a",marginBottom:6}},`단지 — ${complex?.totalUnits}세대 · ${complex?.floors}층 · ${complex?.year}년`),
         h("div",{style:{display:"flex",flexWrap:"wrap",gap:5}},...(complex?.amenities||[]).map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a)))
       ),
-      h(Btn,{style:{width:"100%",background:info?`linear-gradient(135deg,${info.color},${info.color}bb)`:"#1e40af",color:"#fff",borderRadius:12,padding:"14px 0",fontSize:15,fontWeight:700}},"📞 문의하기")
+      h(Btn,{style:{width:"100%",background:info?`linear-gradient(135deg,${info.color},${info.color}bb)`:"#1e40af",color:"#fff",borderRadius:12,padding:"14px 0",fontSize:15,fontWeight:700}},"📞 문의하기"),
+      h(MarketPanel,{listing,complex,allListings,allComplexes,trades,onAddTrade})
     )
   );
 }
@@ -376,7 +638,7 @@ function ComplexCard({complex,listings,onClick}){
   );
 }
 
-function ComplexDetail({complex,listings,onBack,onListingClick}){
+function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trades,onAddTrade}){
   const info=DISTRICTS[complex.gu];
   const mine=listings.filter(l=>l.complexId===complex.id&&l.status==="판매중");
   return h("div",null,
@@ -405,14 +667,15 @@ function ComplexDetail({complex,listings,onBack,onListingClick}){
           h("div",{style:{fontWeight:700,color:"#0f172a"}},`${l.unit} · ${l.floor}층 · ${l.size}㎡`),
           h("div",{style:{fontSize:12,color:"#64748b"}},`${l.rooms}룸 · ${l.direction}`)
         ),
-        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},priceLabel(l,listings,complexes))
+        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},priceLabel(l,listings,allComplexes))
       ))
-    )
+    ),
+    h(ComplexMarketPanel,{complex,allListings:listings,complexes:allComplexes,trades})
   );
 }
 
 // ── 사용자 앱 ───────────────────────────────────────────────────────────────
-function UserApp({listings,complexes}){
+function UserApp({listings,complexes,trades,setTrades}){
   const [tab,setTab]=useState("map");
   const [selGus,setSelGus]=useState([]);
   const [selDong,setSelDong]=useState("전체");
@@ -424,6 +687,20 @@ function UserApp({listings,complexes}){
   const [fromCxL,setFromCxL]=useState(null);
 
   const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
+
+  // 실거래 기록 추가
+  const addTrade=useCallback((listing)=>{
+    const dp=calcDynamicPrice(listing,listings,complexes);
+    const price=dp?dp.price:(listing.price||listing.deposit||0);
+    const last=(trades||[]).filter(t=>t.listingId===listing.id).slice(-1)[0];
+    const delta=last?price-last.price:0;
+    const now=new Date();
+    const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const newTrade={id:Date.now(),listingId:listing.id,price,delta,date:dateStr};
+    const updated=[...(trades||[]),newTrade];
+    setTrades(updated);
+    lsSet("vrc_trades",updated);
+  },[listings,complexes,trades]);
 
   const counts=useMemo(()=>{
     const c={};
@@ -452,9 +729,9 @@ function UserApp({listings,complexes}){
     return true;
   }),[complexes,selGus,selDong,propType,kw]);
 
-  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null),allListings:listings,allComplexes:complexes});}
-  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null),allListings:listings,allComplexes:complexes});}
-  if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>setSelCx(null),onListingClick:l=>{setFromCxL(l);setSelCx(null);}});}
+  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null),allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
+  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null),allListings:listings,allComplexes:complexes,trades,onAddTrade:addTrade});}
+  if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>setSelCx(null),onListingClick:l=>{setFromCxL(l);setSelCx(null);},allComplexes:complexes,trades,onAddTrade:addTrade});}
 
   const tabS=v=>({flex:1,padding:"9px 0",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b",transition:"all 0.2s"});
   const guS=gu=>{const info=DISTRICTS[gu],isSel=selGus.includes(gu);return{padding:"5px 10px",border:`2px solid ${isSel?info.color:"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:isSel?info.color+"22":"#f8fafc",color:isSel?info.color:"#64748b"};};
@@ -540,10 +817,6 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
         )
       )
     ),
-    h("div",{style:{background:"linear-gradient(135deg,#eff6ff,#dbeafe)",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#1e40af",lineHeight:1.6}},
-      "📊 ",h("strong",null,"가격 자동 조정 중"),
-      " — 매물이 늘면 가격↓, 줄면 가격↑. 등록 30일 내 소폭 상승, 이후 장기 할인 적용."
-    ),
     h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}},
       h(Btn,{onClick:()=>{setTab("listings");setShowForm(false);},style:tabS("listings")},"📋 매물"),
       h(Btn,{onClick:()=>{setTab("complexes");setShowForm(false);},style:tabS("complexes")},"🏢 단지")
@@ -568,10 +841,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
               h("div",{style:{display:"flex",gap:6,marginBottom:4}},h(TradeBadge,{type:l.type}),h("span",{style:{fontSize:11,padding:"2px 6px",borderRadius:6,background:l.status==="판매중"?"#d1fae5":"#f1f5f9",color:l.status==="판매중"?"#065f46":"#64748b",fontWeight:600}},l.status)),
               h("div",{style:{fontWeight:700,color:"#0f172a",fontSize:14}},`${c?.name||"?"} ${l.unit}`),
               h("div",{style:{fontSize:12,color:"#64748b"}},`${c?.gu||""} ${c?.dong||""} · ${l.size}㎡ · ${l.floor}층`),
-              h("div",{style:{display:"flex",alignItems:"center",gap:4}},
-              h("span",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l,listings,complexes)),
-              (()=>{const dp=calcDynamicPrice(l,listings,complexes);if(!dp||Math.abs(dp.pct)<0.3)return null;const up=dp.pct>0;return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a"}},(up?"▲":"▼")+Math.abs(dp.pct)+"%");})()
-            )
+              h("div",{style:{display:"flex",alignItems:"center",gap:4}},h("span",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l,listings,complexes)),(()=>{const dp=calcDynamicPrice(l,listings,complexes);if(!dp||Math.abs(dp.pct)<0.3)return null;const up=dp.pct>0;return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a"}},(up?"▲":"▼")+Math.abs(dp.pct)+"%");})())
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
               h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId)});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
@@ -676,6 +946,7 @@ function App(){
   const [mode,setMode]=useState("user");
   const [complexes,setComplexes]=useState(()=>lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES));
   const [listings,setListings]=useState(()=>lsGet(LS_LISTINGS,DEFAULT_LISTINGS));
+  const [trades,setTrades]=useState(()=>lsGet("vrc_trades",[]));
 
   const headerBg=mode==="user"?"linear-gradient(135deg,#0f172a,#1e3a5f 60%,#0c4a6e)":"linear-gradient(135deg,#7f1d1d,#991b1b,#dc2626)";
   const modeBtn=(v,label)=>h(Btn,{onClick:()=>setMode(v),style:{padding:"7px 12px",borderRadius:8,fontSize:12,fontWeight:700,background:mode===v?"rgba(255,255,255,0.18)":"transparent",color:mode===v?"#fff":"rgba(255,255,255,0.45)"}},label);
@@ -697,7 +968,7 @@ function App(){
       h("span",{style:{color:"#fff",fontSize:11,fontWeight:600}},"⚠️ 관리자 전용 — 변경사항 자동 저장")
     ),
     h("div",{style:{maxWidth:960,margin:"0 auto",padding:"22px 14px 80px"}},
-      mode==="user"?h(UserApp,{listings,complexes}):h(AdminApp,{listings,setListings,complexes,setComplexes})
+      mode==="user"?h(UserApp,{listings,complexes,trades,setTrades}):h(AdminApp,{listings,setListings,complexes,setComplexes})
     )
   );
 }
