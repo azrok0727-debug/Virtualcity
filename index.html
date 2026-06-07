@@ -36,11 +36,117 @@ const manifest={
 const blob=new Blob([JSON.stringify(manifest)],{type:"application/json"});
 document.getElementById("manifestLink").href=URL.createObjectURL(blob);
 
-// ── localStorage 유틸 ────────────────────────────────────────────────────
+// ── localStorage 유틸 (사진 분리 저장으로 용량 최적화) ─────────────────
 const LS_COMPLEXES="vrc_complexes";
 const LS_LISTINGS="vrc_listings";
-function lsGet(key,fallback){try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback;}catch{return fallback;}}
-function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch(e){console.warn("localStorage 저장 실패",e);}}
+const LS_PHOTOS="vrc_photos"; // {cx_ID: base64, lp_ID_0: base64, ...}
+
+function lsGet(key,fallback){
+  try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback;}
+  catch{return fallback;}
+}
+function lsSet(key,val){
+  try{
+    localStorage.setItem(key,JSON.stringify(val));
+  }catch(e){
+    // 용량 초과 시 사진 데이터만 정리 후 재시도
+    console.warn("localStorage 용량 초과, 사진 정리 후 재시도");
+    try{
+      // 오래된 매물 사진부터 제거
+      const photos=lsGet(LS_PHOTOS,{});
+      const keys=Object.keys(photos).filter(k=>k.startsWith("lp_"));
+      if(keys.length>0){
+        delete photos[keys[0]];
+        localStorage.setItem(LS_PHOTOS,JSON.stringify(photos));
+      }
+      localStorage.setItem(key,JSON.stringify(val));
+    }catch(e2){console.error("저장 실패:",e2);}
+  }
+}
+
+// 사진 저장/로드 헬퍼
+function savePhoto(key,base64){
+  const photos=lsGet(LS_PHOTOS,{});
+  if(base64)photos[key]=base64;
+  else delete photos[key];
+  lsSet(LS_PHOTOS,photos);
+}
+function loadPhoto(key){
+  const photos=lsGet(LS_PHOTOS,{});
+  return photos[key]||null;
+}
+
+// 단지/매물에서 사진 필드를 제거하고 별도 저장
+function stripAndSavePhotos(complexes,listings){
+  const photos=lsGet(LS_PHOTOS,{});
+  const cleanComplexes=complexes.map(cx=>{
+    if(cx.photo){photos["cx_"+cx.id]=cx.photo;}
+    const{photo,...rest}=cx;
+    return rest;
+  });
+  const cleanListings=listings.map(l=>{
+    if(l.photos&&l.photos.length){
+      l.photos.forEach((p,i)=>{if(p)photos["lp_"+l.id+"_"+i]=p;});
+    }
+    const{photos:_,...rest}=l;
+    return rest;
+  });
+  try{localStorage.setItem(LS_PHOTOS,JSON.stringify(photos));}catch(e){console.warn("사진 저장 실패",e);}
+  return{cleanComplexes,cleanListings};
+}
+
+// 단지/매물에 사진 필드 복원
+function restorePhotos(complexes,listings){
+  const photos=lsGet(LS_PHOTOS,{});
+  const restoredCx=complexes.map(cx=>({
+    ...cx,
+    photo:photos["cx_"+cx.id]||null
+  }));
+  const restoredL=listings.map(l=>{
+    const lPhotos=[];
+    for(let i=0;i<5;i++){
+      const p=photos["lp_"+l.id+"_"+i];
+      if(p)lPhotos.push(p);
+    }
+    return{...l,photos:lPhotos};
+  });
+  return{complexes:restoredCx,listings:restoredL};
+}
+
+// 통합 저장 함수 (사진 분리)
+function saveAll(complexes,listings){
+  const{cleanComplexes,cleanListings}=stripAndSavePhotos(complexes,listings);
+  lsSet(LS_COMPLEXES,cleanComplexes);
+  lsSet(LS_LISTINGS,cleanListings);
+}
+
+// 용량 현황 확인
+function getStorageUsage(){
+  let total=0;
+  for(let k in localStorage){
+    if(localStorage.hasOwnProperty(k)&&k.startsWith("vrc_")){
+      total+=localStorage[k].length*2;
+    }
+  }
+  return(total/1024/1024).toFixed(2);
+}
+
+// 기존 listingId 기반 trades → complexId 기반 마이그레이션
+(function migrateTrades(){
+  try{
+    const raw=localStorage.getItem("vrc_trades");
+    if(!raw)return;
+    const arr=JSON.parse(raw);
+    if(!arr.length||arr[0].complexId!==undefined)return; // 이미 마이그레이션됨
+    const listings=JSON.parse(localStorage.getItem("vrc_listings")||"[]");
+    const migrated=arr.map(t=>{
+      const l=listings.find(x=>x.id===t.listingId);
+      return{...t,complexId:l?l.complexId:null};
+    }).filter(t=>t.complexId);
+    localStorage.setItem("vrc_trades",JSON.stringify(migrated));
+    console.log("trades migrated:",migrated.length,"건");
+  }catch(e){console.warn("migration error",e);}
+})();
 
 const {createElement:h,useState,useMemo,useCallback,useEffect,useRef,Fragment}=React;
 
@@ -49,7 +155,7 @@ const DISTRICTS={
   수설구:{color:"#6366f1",dongs:["일서동","냉전동","수설동"],emoji:"🏔️",desc:"북부 산악지대",path:"M5,10 Q8,5 18,8 Q25,10 27,22 Q25,35 18,38 Q8,36 5,28 Z",cx:15,cy:22},
   청해구:{color:"#0ea5e9",dongs:["오션시티","청해동","상천동"],emoji:"🌊",desc:"해안 중심가",path:"M28,12 Q38,8 52,12 Q58,20 56,38 Q50,48 38,46 Q28,42 26,30 Z",cx:42,cy:28},
   남양구:{color:"#10b981",dongs:["서수양동","수양본동","현대동"],emoji:"🌿",desc:"남부 주거지",path:"M26,68 Q36,64 50,68 Q54,75 50,82 Q40,86 28,82 Z",cx:38,cy:75},
-  초계구:{color:"#d97706",dongs:["초계동","녹당동","스마트시티","산원동","대당동","경동"],emoji:"🏙️",desc:"도심 상업지구",path:"M32,44 Q42,40 60,44 Q65,52 62,66 Q55,72 42,70 Q32,66 30,56 Z",cx:48,cy:55},
+  초계구:{color:"#d97706",dongs:["초계동","녹당동","스마트시티","산원동","대당동","경동","신성동"],emoji:"🏙️",desc:"도심 상업지구",path:"M32,44 Q42,40 60,44 Q65,52 62,66 Q55,72 42,70 Q32,66 30,56 Z",cx:48,cy:55},
   나루구:{color:"#ef4444",dongs:["나루동","녹산동","신아동"],emoji:"⛵",desc:"항구 물류지구",path:"M56,20 Q68,18 74,28 Q76,38 70,42 Q60,44 55,36 Z",cx:65,cy:30},
   석경구:{color:"#8b5cf6",dongs:["신석경동","아화동"],emoji:"💎",desc:"신흥 개발지구",path:"M62,44 Q72,42 78,50 Q80,60 74,66 Q64,68 60,60 Z",cx:70,cy:52},
   인현구:{color:"#f97316",dongs:["인현도동","평촌동","마림동"],emoji:"🏝️",desc:"동부 도서지구",path:"M76,42 Q88,40 93,52 Q95,64 90,70 Q82,74 76,66 Q73,58 76,48 Z",cx:84,cy:56},
@@ -214,21 +320,24 @@ function LineChart({data,color,height=160,label}){
 // 시세 이력 생성 (가상 과거 데이터 + 실거래 포함)
 function buildPriceHistory(listing,allListings,complexes,trades){
   if(!listing)return[];
+  const cxId=listing.complexId;
   const base=listing.price||listing.deposit||0;
   const dp=calcDynamicPrice(listing,allListings,complexes);
   const now=dp?dp.price:base;
-  // 가상 6개월 이력 생성 (등록일 기준 역산)
+  // 단지 단위 실거래 기록 (같은 단지 모든 매물 공유)
+  const cxTrades=(trades||[]).filter(t=>t.complexId===cxId).slice(-20);
+  // 가상 6개월 이력
   const months=["1월","2월","3월","4월","5월","6월","현재"];
-  const seed=listing.id*7+base;
+  const seed=cxId*7+base;
   const pts=months.map((label,i)=>{
     if(i===months.length-1)return{label,v:now};
     const noise=((seed*(i+1)*1234567)%100-50)/1000;
     const trend=(i-3)*0.005;
     return{label,v:Math.round(base*(1+trend+noise)/100)*100};
   });
-  // 실거래 기록 덮어쓰기
-  const myTrades=(trades||[]).filter(t=>t.listingId===listing.id).slice(-3);
-  myTrades.forEach((t,i)=>{
+  // 실거래 최근 3건으로 그래프 후반부 덮어쓰기
+  const recent=cxTrades.slice(-3);
+  recent.forEach((t,i)=>{
     const idx=Math.max(0,pts.length-3+i);
     pts[idx]={label:t.date,v:t.price};
   });
@@ -240,7 +349,7 @@ function buildComplexPriceHistory(complex,allListings,complexes,trades){
   const cxListings=allListings.filter(l=>l.complexId===complex.id&&l.type==="매매");
   if(!cxListings.length)return[];
   const months=["1월","2월","3월","4월","5월","6월","현재"];
-  return months.map((label,i)=>{
+  const pts=months.map((label,i)=>{
     const avg=cxListings.reduce((s,l)=>{
       const base=l.price||0;
       const seed=l.id*7+base;
@@ -251,11 +360,18 @@ function buildComplexPriceHistory(complex,allListings,complexes,trades){
     },0)/cxListings.length;
     return{label,v:Math.round(avg/100)*100};
   });
+  // 단지 실거래 기록으로 후반부 덮어쓰기
+  const cxTrades=(trades||[]).filter(t=>t.complexId===complex.id).slice(-3);
+  cxTrades.forEach((t,i)=>{
+    const idx=Math.max(0,pts.length-3+i);
+    pts[idx]={label:t.date,v:t.price};
+  });
+  return pts;
 }
 
 // ── 실거래 내역 컴포넌트 ─────────────────────────────────────────────────────
-function TradeHistory({listingId,trades,color}){
-  const myTrades=(trades||[]).filter(t=>t.listingId===listingId).slice().reverse();
+function TradeHistory({complexId,trades,color}){
+  const myTrades=(trades||[]).filter(t=>t.complexId===complexId).slice().reverse();
   if(!myTrades.length)return h("div",{style:{textAlign:"center",padding:"16px 0",color:"#94a3b8",fontSize:12}},"실거래 내역 없음");
   return h("div",{style:{display:"flex",flexDirection:"column",gap:6}},
     ...myTrades.map((t,i)=>h("div",{key:i,style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#f8fafc",borderRadius:8,borderLeft:`3px solid ${color}`}},
@@ -350,26 +466,29 @@ function LoanCalc({listing,allListings,complexes}){
 function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade}){
   const [tab,setTab]=useState("chart");
   const color=complex?DISTRICTS[complex.gu]?.color:"#1e40af";
+  const cxId=listing.complexId;
   const chartData=buildPriceHistory(listing,allListings,complexes,trades);
   const showLoan=listing.type!=="월세";
+  // 단지 실거래 건수
+  const cxTradeCnt=(trades||[]).filter(t=>t.complexId===cxId).length;
 
   return h("div",{style:{background:"#fff",borderRadius:16,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",marginTop:16}},
     // 탭
     h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:10,padding:3,marginBottom:16}},
-      ...([["chart","📈 시세"],["trades","📋 실거래"],showLoan&&["loan","🏦 대출"]].filter(Boolean)).map(([v,label])=>
+      ...([["chart","📈 시세"],["trades","📋 실거래"+(cxTradeCnt>0?" ("+cxTradeCnt+")":"")],showLoan&&["loan","🏦 대출"]].filter(Boolean)).map(([v,label])=>
         h(Btn,{key:v,onClick:()=>setTab(v),style:{flex:1,padding:"7px 0",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b"}},label)
       )
     ),
     tab==="chart"&&h("div",null,
-      h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"최근 6개월 시세 추이"),
+      h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"최근 6개월 시세 추이 (단지 기준)"),
       h(LineChart,{data:chartData,color,height:160})
     ),
     tab==="trades"&&h("div",null,
       h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
-        h("span",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},"실거래 내역"),
+        h("span",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},"단지 실거래 내역"),
         h(Btn,{onClick:()=>onAddTrade(listing),style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
       ),
-      h(TradeHistory,{listingId:listing.id,trades,color})
+      h(TradeHistory,{complexId:cxId,trades,color})
     ),
     showLoan&&tab==="loan"&&h(LoanCalc,{listing,allListings,complexes})
   );
@@ -379,7 +498,8 @@ function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade}){
 function ComplexMarketPanel({complex,allListings,complexes,trades}){
   const color=DISTRICTS[complex.gu]?.color||"#1e40af";
   const chartData=buildComplexPriceHistory(complex,allListings,complexes,trades);
-  const cxTrades=(trades||[]).filter(t=>{const l=allListings.find(x=>x.id===t.listingId);return l&&l.complexId===complex.id;}).slice().reverse().slice(0,8);
+  // 단지 단위로 직접 필터 (complexId 기반)
+  const cxTrades=(trades||[]).filter(t=>t.complexId===complex.id).slice().reverse().slice(0,10);
   const [tab,setTab]=useState("chart");
 
   return h("div",{style:{background:"#fff",borderRadius:16,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",marginTop:16}},
@@ -396,16 +516,15 @@ function ComplexMarketPanel({complex,allListings,complexes,trades}){
       h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:10}},"단지 전체 실거래 내역"),
       cxTrades.length===0?h("div",{style:{textAlign:"center",padding:20,color:"#94a3b8",fontSize:12}},"실거래 내역 없음"):
       h("div",{style:{display:"flex",flexDirection:"column",gap:6}},
-        ...cxTrades.map((t,i)=>{
-          const l=allListings.find(x=>x.id===t.listingId);
-          return h("div",{key:i,style:{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:"#f8fafc",borderRadius:8,borderLeft:`3px solid ${color}`}},
+        ...cxTrades.map((t,i)=>
+          h("div",{key:i,style:{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:"#f8fafc",borderRadius:8,borderLeft:`3px solid ${color}`}},
             h("div",null,
-              h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},fmt(t.price)+" · "+(l?.unit||"")),
+              h("div",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},fmt(t.price)),
               h("div",{style:{fontSize:10,color:"#94a3b8"}},t.date)
             ),
             h("span",{style:{fontSize:11,fontWeight:600,color:t.delta>0?"#dc2626":"#16a34a"}},t.delta>0?"▲"+fmt(t.delta):"▼"+fmt(Math.abs(t.delta)))
-          );
-        })
+          )
+        )
       )
     )
   );
@@ -689,14 +808,16 @@ function UserApp({listings,complexes,trades,setTrades}){
   const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
 
   // 실거래 기록 추가
+  // 실거래 기록 — 단지 단위로 저장 (같은 단지 매물들이 공유)
   const addTrade=useCallback((listing)=>{
     const dp=calcDynamicPrice(listing,listings,complexes);
     const price=dp?dp.price:(listing.price||listing.deposit||0);
-    const last=(trades||[]).filter(t=>t.listingId===listing.id).slice(-1)[0];
+    const cxId=listing.complexId;
+    const last=(trades||[]).filter(t=>t.complexId===cxId).slice(-1)[0];
     const delta=last?price-last.price:0;
     const now=new Date();
     const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
-    const newTrade={id:Date.now(),listingId:listing.id,price,delta,date:dateStr};
+    const newTrade={id:Date.now(),complexId:cxId,price,delta,date:dateStr};
     const updated=[...(trades||[]),newTrade];
     setTrades(updated);
     lsSet("vrc_trades",updated);
@@ -794,14 +915,18 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     let updated;
     if(editItem)updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
     else updated=[...listings,{...d,id:Date.now()}];
-    setListings(updated);lsSet(LS_LISTINGS,updated);setShowForm(false);
+    setListings(updated);
+    saveAll(complexes,updated);
+    setShowForm(false);
   };
   const saveC=()=>{
     const d={...cForm,totalUnits:Number(cForm.totalUnits),floors:Number(cForm.floors),year:Number(cForm.year),amenities:cForm.amenities.split(",").map(s=>s.trim()).filter(Boolean)};
     let updated;
     if(editItem)updated=complexes.map(c=>c.id===editItem.id?{...d,id:editItem.id}:c);
     else updated=[...complexes,{...d,id:Date.now()}];
-    setComplexes(updated);lsSet(LS_COMPLEXES,updated);setShowForm(false);
+    setComplexes(updated);
+    saveAll(updated,listings);
+    setShowForm(false);
   };
 
   const stats=useMemo(()=>({total:listings.length,active:listings.filter(l=>l.status==="판매중").length,done:listings.filter(l=>l.status==="거래완료").length,cx:complexes.length}),[listings,complexes]);
@@ -809,6 +934,19 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
 
   return h("div",null,
     Modal,
+    // 저장 용량 표시
+    (()=>{
+      const mb=parseFloat(getStorageUsage());
+      const pct=Math.round(mb/5*100);
+      const col=pct>80?"#dc2626":pct>50?"#f59e0b":"#10b981";
+      return h("div",{style:{background:"#f8fafc",borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}},
+        h("div",{style:{flex:1,background:"#e2e8f0",borderRadius:4,height:6,overflow:"hidden"}},
+          h("div",{style:{width:Math.min(100,pct)+"%",height:"100%",background:col,borderRadius:4,transition:"width 0.3s"}})
+        ),
+        h("span",{style:{fontSize:11,fontWeight:600,color:col,whiteSpace:"nowrap"}},mb+"MB / 5MB"),
+        pct>80&&h("span",{style:{fontSize:10,color:"#dc2626",fontWeight:600}},"⚠️ 용량 부족!")
+      );
+    })(),
     // 통계
     h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:18}},
       ...[["총 매물",stats.total,"#6366f1"],["판매중",stats.active,"#10b981"],["거래완료",stats.done,"#64748b"],["단지수",stats.cx,"#f59e0b"]].map(([k,v,c])=>
@@ -845,8 +983,8 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
               h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId)});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
-              h(Btn,{onClick:async()=>{const ok=await confirm("매물을 삭제할까요?",`${c?.name||""} ${l.unit}`);if(ok){const u=listings.filter(x=>x.id!==l.id);setListings(u);lsSet(LS_LISTINGS,u);}},style:rowS("#fee2e2","#dc2626")},"삭제"),
-              h(Btn,{onClick:()=>{const u=listings.map(x=>x.id===l.id?{...x,status:x.status==="판매중"?"거래완료":"판매중"}:x);setListings(u);lsSet(LS_LISTINGS,u);},style:rowS("#fff7ed","#ea580c")},l.status==="판매중"?"완료":"재등록")
+              h(Btn,{onClick:async()=>{const ok=await confirm("매물을 삭제할까요?",`${c?.name||""} ${l.unit}`);if(ok){const u=listings.filter(x=>x.id!==l.id);setListings(u);saveAll(complexes,u);}},style:rowS("#fee2e2","#dc2626")},"삭제"),
+              h(Btn,{onClick:()=>{const u=listings.map(x=>x.id===l.id?{...x,status:x.status==="판매중"?"거래완료":"판매중"}:x);setListings(u);saveAll(complexes,u);},style:rowS("#fff7ed","#ea580c")},l.status==="판매중"?"완료":"재등록")
             )
           );
         })
@@ -905,7 +1043,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
               h(Btn,{onClick:async()=>{
                 if(listings.some(l=>l.complexId===c.id)){await alert("이 단지에 매물이 있어 삭제할 수 없습니다.");return;}
                 const ok=await confirm("단지를 삭제할까요?",c.name);
-                if(ok){const u=complexes.filter(x=>x.id!==c.id);setComplexes(u);lsSet(LS_COMPLEXES,u);}
+                if(ok){const u=complexes.filter(x=>x.id!==c.id);setComplexes(u);saveAll(u,listings);}
               },style:rowS("#fee2e2","#dc2626")},"삭제")
             )
           );
@@ -944,8 +1082,18 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
 // ── 루트 ────────────────────────────────────────────────────────────────────
 function App(){
   const [mode,setMode]=useState("user");
-  const [complexes,setComplexes]=useState(()=>lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES));
-  const [listings,setListings]=useState(()=>lsGet(LS_LISTINGS,DEFAULT_LISTINGS));
+  const [complexes,setComplexes]=useState(()=>{
+    const raw=lsGet(LS_COMPLEXES,null);
+    if(!raw)return DEFAULT_COMPLEXES;
+    const{complexes:restored}=restorePhotos(raw,lsGet(LS_LISTINGS,DEFAULT_LISTINGS));
+    return restored;
+  });
+  const [listings,setListings]=useState(()=>{
+    const raw=lsGet(LS_LISTINGS,null);
+    if(!raw)return DEFAULT_LISTINGS;
+    const{listings:restored}=restorePhotos(lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES),raw);
+    return restored;
+  });
   const [trades,setTrades]=useState(()=>lsGet("vrc_trades",[]));
 
   const headerBg=mode==="user"?"linear-gradient(135deg,#0f172a,#1e3a5f 60%,#0c4a6e)":"linear-gradient(135deg,#7f1d1d,#991b1b,#dc2626)";
