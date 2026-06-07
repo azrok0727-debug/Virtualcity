@@ -229,38 +229,83 @@ const DEFAULT_LISTINGS=[
 const fmt=w=>{if(!w||isNaN(w))return"0만";return w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── 동적 가격 + 대출 엔진 ─────────────────────────────────────────────────────
-const LS_TRADES="vrc_trades"; // 실거래 내역
+// ── 동적 가격 + 대출 엔진 (1분마다 최대 ±30% 복리 누적) ─────────────────────
+const LS_TRADES="vrc_trades";
+const LS_PRICE_TICKS="vrc_price_ticks"; // {listingId: [{t:timestamp, mult:누적배수}]}
 
-// 시장 지수 계산 (0~1, 높을수록 과열)
+// 앱 시작 시각 (세션 기준)
+const APP_START=Date.now();
+
+// 시장 지수 (0~1, 높을수록 과열)
 function marketIndex(allListings,complexes){
   const active=allListings.filter(l=>l.status==="판매중").length;
   const total=allListings.length||1;
-  const supplyRatio=active/total; // 공급 많으면 냉각
-  return Math.max(0,Math.min(1, 1-supplyRatio*0.8));
+  return Math.max(0,Math.min(1,1-active/total*0.8));
 }
 
-// 동적 가격 계산
+// 1분 단위 틱에서 이 매물의 누적 가격 배수 계산
+// 방향: 매물 많으면 하락, 적으면 상승. 1분마다 최대 ±30% 추가 반영
+function getTickMultiplier(listing,allListings,complexes){
+  const key="vrc_pt_"+listing.id;
+  let ticks;
+  try{ticks=JSON.parse(localStorage.getItem(key)||"[]");}catch{ticks=[];}
+
+  const now=Date.now();
+  const minutesElapsed=Math.floor((now-APP_START)/60000); // 앱 켠 후 경과 분
+
+  // 이미 오늘 세션에서 계산된 틱이 충분하면 재사용
+  if(ticks.length>=minutesElapsed+1&&ticks.length>0){
+    return ticks[ticks.length-1].mult;
+  }
+
+  // 필요한 틱 수만큼 새로 생성
+  const complex=complexes.find(cx=>cx.id===listing.complexId);
+  if(!complex)return 1;
+
+  const sameActive=allListings.filter(l=>l.complexId===listing.complexId&&l.type===listing.type&&l.status==="판매중").length;
+  const guIds=complexes.filter(cx=>cx.gu===complex.gu).map(cx=>cx.id);
+  const guActive=allListings.filter(l=>guIds.includes(l.complexId)&&l.status==="판매중").length;
+  const mi=marketIndex(allListings,complexes);
+
+  // 1분당 변동률 결정 (수급 + 시장 지수 반영)
+  // 매물 많으면 하락(-), 적으면 상승(+), 최대 ±30%/분
+  const supplySignal=-(sameActive-1)*0.04;  // 매물 1개 초과당 -4%
+  const guSignal=-(guActive-5)*0.01;         // 구 과잉당 -1%
+  const mktSignal=(mi-0.5)*0.08;             // 시장 과열 +4%, 냉각 -4%
+  const rawRate=supplySignal+guSignal+mktSignal;
+  const ratePerMin=Math.max(-0.30,Math.min(0.30,rawRate)); // ±30% 클램프
+
+  // 기존 틱에서 이어서 생성
+  let lastMult=ticks.length>0?ticks[ticks.length-1].mult:1;
+  const needed=minutesElapsed+1-ticks.length;
+  for(let i=0;i<Math.max(0,needed);i++){
+    // 약간의 랜덤 노이즈 (±3%) 추가해서 자연스럽게
+    const noise=(Math.random()-0.5)*0.06;
+    const thisTick=Math.max(-0.30,Math.min(0.30,ratePerMin+noise));
+    lastMult=lastMult*(1+thisTick);
+    // 원가 대비 최대 10배, 최소 0.1배로 제한
+    lastMult=Math.max(0.1,Math.min(10,lastMult));
+    ticks.push({t:APP_START+ticks.length*60000,mult:lastMult});
+  }
+
+  // localStorage에 저장 (최근 120틱만 보관)
+  try{localStorage.setItem(key,JSON.stringify(ticks.slice(-120)));}catch{}
+
+  return lastMult;
+}
+
+// 동적 가격 계산 (복리 누적 배수 적용)
 function calcDynamicPrice(listing,allListings,complexes){
   if(!listing||!allListings||!complexes)return null;
-  const complex=complexes.find(c=>c.id===listing.complexId);
-  if(!complex)return null;
-  const sameActive=allListings.filter(l=>l.complexId===listing.complexId&&l.type===listing.type&&l.status==="판매중").length;
-  const guIds=complexes.filter(c=>c.gu===complex.gu).map(c=>c.id);
-  const guActive=allListings.filter(l=>guIds.includes(l.complexId)&&l.status==="판매중").length;
-  const daysSince=Math.max(0,Math.floor((Date.now()-new Date(listing.registeredAt||Date.now()))/86400000));
-  const supplyP=-(sameActive-1)*0.018;
-  const guP=-(guActive-5)*0.004;
-  const timeP=daysSince>30?-(daysSince-30)*0.0003:daysSince*0.0004;
-  // 대출 환경도 가격에 반영
-  const mi=marketIndex(allListings,complexes);
-  const loanBoost=(mi-0.5)*0.06; // 시장 과열시 가격 상승 압력
-  const pct=Math.max(-0.25,Math.min(0.20,supplyP+guP+timeP+loanBoost));
-  const adj=v=>v!=null?Math.round(v*(1+pct)/100)*100:null;
+  const mult=getTickMultiplier(listing,allListings,complexes);
+  const pct=(mult-1); // 누적 변동률
+  const pctRounded=Math.round(pct*1000)/10;
+
+  const adj=v=>v!=null?Math.round(v*mult/100)*100:null;
   const adjPrice=listing.type==="월세"?listing.price:(adj(listing.price)||listing.price);
   const adjDeposit=listing.deposit!=null?adj(listing.deposit):null;
-  const adjMonthly=listing.monthly!=null?Math.round(listing.monthly*(1+pct)):null;
-  return{price:adjPrice,deposit:adjDeposit,monthly:adjMonthly,pct:Math.round(pct*1000)/10};
+  const adjMonthly=listing.monthly!=null?Math.round(listing.monthly*mult):null;
+  return{price:adjPrice,deposit:adjDeposit,monthly:adjMonthly,pct:pctRounded,mult};
 }
 
 // 대출 조건 자동 계산
@@ -293,11 +338,17 @@ function calcMonthly(principal,annualRate,years){
 
 // 가격 태그 (▲▼)
 function PriceTag({pct}){
-  if(!pct||Math.abs(pct)<0.3)return null;
+  if(!pct||Math.abs(pct)<0.1)return null;
   const up=pct>0;
-  return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,
-    background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a",marginLeft:5,verticalAlign:"middle"}},
-    (up?"▲":"▼")+Math.abs(pct)+"%"
+  const abs=Math.abs(pct);
+  // 변동 강도에 따라 색상 진하기 변화
+  const intensity=Math.min(1,abs/30);
+  const bgUp=`rgba(254,${Math.round(226-intensity*80)},${Math.round(226-intensity*80)},1)`;
+  const bgDn=`rgba(${Math.round(240-intensity*80)},${Math.round(253-intensity*60)},${Math.round(244-intensity*80)},1)`;
+  return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:4,
+    background:up?bgUp:bgDn,color:up?"#dc2626":"#16a34a",marginLeft:5,verticalAlign:"middle",
+    border:`1px solid ${up?"#fca5a5":"#86efac"}`}},
+    (up?"▲":"▼")+abs.toFixed(1)+"%"
   );
 }
 
@@ -362,24 +413,46 @@ function buildPriceHistory(listing,allListings,complexes,trades){
   if(!listing)return[];
   const cxId=listing.complexId;
   const base=listing.type==="월세"?(listing.deposit||0):(listing.price||listing.deposit||0);
-  const dp=calcDynamicPrice(listing,allListings,complexes);
-  const now=dp?dp.price:base;
-  // 단지 단위 실거래 기록 (같은 단지 모든 매물 공유)
-  const cxTrades=(trades||[]).filter(t=>t.complexId===cxId).slice(-20);
-  // 가상 6개월 이력
-  const months=["1월","2월","3월","4월","5월","6월","현재"];
-  const seed=cxId*7+base;
-  const pts=months.map((label,i)=>{
-    if(i===months.length-1)return{label,v:now};
-    const noise=((seed*(i+1)*1234567)%100-50)/1000;
-    const trend=(i-3)*0.005;
-    return{label,v:Math.round(base*(1+trend+noise)/100)*100};
-  });
-  // 실거래 최근 3건으로 그래프 후반부 덮어쓰기
-  const recent=cxTrades.slice(-3);
-  recent.forEach((t,i)=>{
+  if(!base)return[];
+
+  // localStorage에서 이 매물의 틱 이력 가져오기
+  let ticks=[];
+  try{ticks=JSON.parse(localStorage.getItem("vrc_pt_"+listing.id)||"[]");}catch{}
+
+  const pts=[];
+  if(ticks.length>=2){
+    // 실제 틱 데이터로 그래프 생성 (최대 12개 포인트)
+    const step=Math.max(1,Math.floor(ticks.length/12));
+    const sampled=ticks.filter((_,i)=>i%step===0).slice(-12);
+    sampled.forEach((tk,i)=>{
+      const label=i===sampled.length-1?"현재":(i+1)+"분";
+      pts.push({label,v:Math.round(base*tk.mult/100)*100});
+    });
+    if(pts[pts.length-1]?.label!=="현재"){
+      const dp=calcDynamicPrice(listing,allListings,complexes);
+      pts.push({label:"현재",v:dp?dp.price:base});
+    }
+  } else {
+    // 틱 없으면 가상 6개월 이력
+    const months=["1월","2월","3월","4월","5월","6월","현재"];
+    const seed=cxId*7+base;
+    months.forEach((label,i)=>{
+      if(i===months.length-1){
+        const dp=calcDynamicPrice(listing,allListings,complexes);
+        pts.push({label,v:dp?dp.price:base});
+      } else {
+        const noise=((seed*(i+1)*1234567)%100-50)/1000;
+        const trend=(i-3)*0.005;
+        pts.push({label,v:Math.round(base*(1+trend+noise)/100)*100});
+      }
+    });
+  }
+
+  // 단지 실거래 기록으로 후반부 보완
+  const cxTrades=(trades||[]).filter(t=>t.complexId===cxId).slice(-3);
+  cxTrades.forEach((t,i)=>{
     const idx=Math.max(0,pts.length-3+i);
-    pts[idx]={label:t.date,v:t.price};
+    if(pts[idx])pts[idx]={label:t.date,v:t.price};
   });
   return pts;
 }
@@ -1165,6 +1238,13 @@ function App(){
     });
     loadTrades().then(t=>setTrades(t||[]));
     setTimeout(()=>setLoaded(true),300);
+  },[]);
+
+  // 1분마다 강제 리렌더 → 가격 변동 화면 반영
+  const [tick,setTick]=useState(0);
+  useEffect(()=>{
+    const id=setInterval(()=>setTick(t=>t+1),60000);
+    return()=>clearInterval(id);
   },[]);
 
   if(!loaded)return h("div",{style:{minHeight:"100vh",background:"#0f172a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}},
