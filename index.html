@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="가상도시 부동산">
+<meta name="theme-color" content="#0f172a">
+<title>가상도시 부동산</title>
+<link rel="manifest" id="manifestLink">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Apple SD Gothic Neo','Noto Sans KR',sans-serif;background:#f0f4f8;min-height:100vh;-webkit-tap-highlight-color:transparent}
+select,input,textarea,button{font-family:inherit}
+@keyframes modalIn{from{opacity:0;transform:scale(0.9)}to{opacity:1;transform:scale(1)}}
+.card{transition:transform 0.2s,box-shadow 0.2s;cursor:pointer}
+.card:hover{transform:translateY(-3px);box-shadow:0 10px 30px rgba(0,0,0,0.13)!important}
+.img-cover{width:100%;height:100%;object-fit:cover;display:block}
+input[type=file]{display:none}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ── PWA 매니페스트 동적 생성 ──────────────────────────────────────────────
+const manifest={
+  name:"가상도시 부동산",short_name:"가상도시",start_url:".",display:"standalone",
+  background_color:"#0f172a",theme_color:"#0f172a",
+  icons:[{src:"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230f172a'/><text y='.9em' font-size='80' x='10'>🏙️</text></svg>",sizes:"any",type:"image/svg+xml"}]
+};
+const blob=new Blob([JSON.stringify(manifest)],{type:"application/json"});
+document.getElementById("manifestLink").href=URL.createObjectURL(blob);
+
+// ── localStorage 유틸 ────────────────────────────────────────────────────
+const LS_COMPLEXES="vrc_complexes";
+const LS_LISTINGS="vrc_listings";
+function lsGet(key,fallback){try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback;}catch{return fallback;}}
+function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch(e){console.warn("localStorage 저장 실패",e);}}
+
+const {createElement:h,useState,useMemo,useCallback,useEffect,useRef,Fragment}=React;
+
+// ── 데이터 ──────────────────────────────────────────────────────────────────
+const DISTRICTS={
+  수설구:{color:"#6366f1",dongs:["일서동","냉전동","수설동"],emoji:"🏔️",desc:"북부 산악지대",path:"M5,10 Q8,5 18,8 Q25,10 27,22 Q25,35 18,38 Q8,36 5,28 Z",cx:15,cy:22},
+  청해구:{color:"#0ea5e9",dongs:["오션시티","청해동","상천동"],emoji:"🌊",desc:"해안 중심가",path:"M28,12 Q38,8 52,12 Q58,20 56,38 Q50,48 38,46 Q28,42 26,30 Z",cx:42,cy:28},
+  남양구:{color:"#10b981",dongs:["서수양동","수양본동","현대동"],emoji:"🌿",desc:"남부 주거지",path:"M26,68 Q36,64 50,68 Q54,75 50,82 Q40,86 28,82 Z",cx:38,cy:75},
+  초계구:{color:"#d97706",dongs:["초계동","녹당동","스마트시티","산원동","대당동","경동"],emoji:"🏙️",desc:"도심 상업지구",path:"M32,44 Q42,40 60,44 Q65,52 62,66 Q55,72 42,70 Q32,66 30,56 Z",cx:48,cy:55},
+  나루구:{color:"#ef4444",dongs:["나루동","녹산동","신아동"],emoji:"⛵",desc:"항구 물류지구",path:"M56,20 Q68,18 74,28 Q76,38 70,42 Q60,44 55,36 Z",cx:65,cy:30},
+  석경구:{color:"#8b5cf6",dongs:["신석경동","아화동"],emoji:"💎",desc:"신흥 개발지구",path:"M62,44 Q72,42 78,50 Q80,60 74,66 Q64,68 60,60 Z",cx:70,cy:52},
+  인현구:{color:"#f97316",dongs:["인현도동","평촌동","마림동"],emoji:"🏝️",desc:"동부 도서지구",path:"M76,42 Q88,40 93,52 Q95,64 90,70 Q82,74 76,66 Q73,58 76,48 Z",cx:84,cy:56},
+};
+const ALL_GU=Object.keys(DISTRICTS);
+
+const DEFAULT_COMPLEXES=[
+  {id:1,name:"수설 하이츠",gu:"수설구",dong:"수설동",address:"수설구 수설동 14",type:"아파트",totalUnits:210,floors:25,year:2020,amenities:["헬스장","주차장","CCTV"],thumbnail:"🏔️",photo:null},
+  {id:2,name:"냉전 스카이뷰",gu:"수설구",dong:"냉전동",address:"수설구 냉전동 88",type:"아파트",totalUnits:180,floors:30,year:2018,amenities:["수영장","헬스장","주차장"],thumbnail:"❄️",photo:null},
+  {id:3,name:"오션시티 레지던스",gu:"청해구",dong:"오션시티",address:"청해구 오션시티 1",type:"오피스텔",totalUnits:320,floors:42,year:2022,amenities:["스카이라운지","수영장","헬스장","주차장"],thumbnail:"🌊",photo:null},
+  {id:4,name:"청해 파크빌",gu:"청해구",dong:"청해동",address:"청해구 청해동 55",type:"빌라",totalUnits:48,floors:5,year:2017,amenities:["공원뷰","주차장"],thumbnail:"🏄",photo:null},
+  {id:5,name:"수양본동 그린",gu:"남양구",dong:"수양본동",address:"남양구 수양본동 22",type:"아파트",totalUnits:400,floors:35,year:2021,amenities:["공원","헬스장","어린이집","주차장"],thumbnail:"🌿",photo:null},
+  {id:6,name:"현대 타운",gu:"남양구",dong:"현대동",address:"남양구 현대동 100",type:"아파트",totalUnits:560,floors:40,year:2023,amenities:["수영장","골프연습장","헬스장","주차장"],thumbnail:"🏘️",photo:null},
+  {id:7,name:"스마트시티 플라자",gu:"초계구",dong:"스마트시티",address:"초계구 스마트시티 77",type:"오피스텔",totalUnits:280,floors:38,year:2023,amenities:["스카이라운지","카페","헬스장","주차장"],thumbnail:"🤖",photo:null},
+  {id:8,name:"경동 센트럴",gu:"초계구",dong:"경동",address:"초계구 경동 3",type:"아파트",totalUnits:750,floors:55,year:2022,amenities:["수영장","헬스장","어린이집","마트","주차장"],thumbnail:"🏙️",photo:null},
+  {id:9,name:"초계 빌리지",gu:"초계구",dong:"초계동",address:"초계구 초계동 41",type:"빌라",totalUnits:60,floors:6,year:2016,amenities:["주차장","CCTV"],thumbnail:"🌾",photo:null},
+  {id:10,name:"나루 항구뷰",gu:"나루구",dong:"나루동",address:"나루구 나루동 9",type:"오피스텔",totalUnits:150,floors:22,year:2020,amenities:["항구뷰","카페","주차장"],thumbnail:"⛵",photo:null},
+  {id:11,name:"신아 힐스",gu:"나루구",dong:"신아동",address:"나루구 신아동 66",type:"아파트",totalUnits:240,floors:28,year:2019,amenities:["헬스장","주차장","CCTV"],thumbnail:"🗺️",photo:null},
+  {id:12,name:"아화 다이아몬드",gu:"석경구",dong:"아화동",address:"석경구 아화동 12",type:"아파트",totalUnits:300,floors:32,year:2024,amenities:["수영장","스카이라운지","헬스장","주차장"],thumbnail:"💎",photo:null},
+  {id:13,name:"인현도 아일랜드",gu:"인현구",dong:"인현도동",address:"인현구 인현도동 1",type:"아파트",totalUnits:190,floors:20,year:2021,amenities:["해변뷰","수영장","주차장"],thumbnail:"🏝️",photo:null},
+  {id:14,name:"평촌 마린뷰",gu:"인현구",dong:"평촌동",address:"인현구 평촌동 33",type:"빌라",totalUnits:36,floors:4,year:2018,amenities:["해변뷰","주차장"],thumbnail:"🌅",photo:null},
+];
+const DEFAULT_LISTINGS=[
+  {id:101,complexId:1,unit:"1201호",type:"매매",price:58000,deposit:null,monthly:null,size:84,rooms:3,baths:2,floor:12,direction:"남향",status:"판매중",description:"수설동 조용한 주거지. 산 조망 최고.",photos:[],registeredAt:"2026-05-10"},
+  {id:102,complexId:2,unit:"2003호",type:"전세",price:45000,deposit:45000,monthly:null,size:74,rooms:3,baths:1,floor:20,direction:"남동향",status:"판매중",description:"스카이뷰 전층 확보. 냉전동 역세권.",photos:[],registeredAt:"2026-05-12"},
+  {id:103,complexId:3,unit:"3501호",type:"매매",price:148000,deposit:null,monthly:null,size:114,rooms:4,baths:2,floor:35,direction:"남향",status:"판매중",description:"오션시티 핵심 입지. 바다 전망 파노라마.",photos:[],registeredAt:"2026-05-14"},
+  {id:104,complexId:3,unit:"1102호",type:"월세",price:3000,deposit:3000,monthly:95,size:33,rooms:1,baths:1,floor:11,direction:"서향",status:"판매중",description:"1인 가구 최적. 스카이라운지 이용 가능.",photos:[],registeredAt:"2026-05-15"},
+  {id:105,complexId:4,unit:"302호",type:"매매",price:32000,deposit:null,monthly:null,size:59,rooms:2,baths:1,floor:3,direction:"남향",status:"판매중",description:"공원뷰 아담한 빌라.",photos:[],registeredAt:"2026-05-16"},
+  {id:106,complexId:5,unit:"801호",type:"매매",price:72000,deposit:null,monthly:null,size:84,rooms:3,baths:2,floor:8,direction:"남향",status:"판매중",description:"그린파크 바로 앞. 쾌적한 주거환경.",photos:[],registeredAt:"2026-05-17"},
+  {id:107,complexId:6,unit:"3301호",type:"매매",price:195000,deposit:null,monthly:null,size:134,rooms:4,baths:3,floor:33,direction:"남향",status:"판매중",description:"현대동 프리미엄 대단지. 골프연습장 포함.",photos:[],registeredAt:"2026-05-18"},
+  {id:108,complexId:6,unit:"502호",type:"전세",price:68000,deposit:68000,monthly:null,size:59,rooms:2,baths:1,floor:5,direction:"동향",status:"판매중",description:"신혼부부 추천. 어린이집 도보 2분.",photos:[],registeredAt:"2026-05-19"},
+  {id:109,complexId:7,unit:"2201호",type:"월세",price:5000,deposit:5000,monthly:130,size:40,rooms:1,baths:1,floor:22,direction:"남향",status:"판매중",description:"스마트시티 중심. 카페·편의 인프라 최강.",photos:[],registeredAt:"2026-05-20"},
+  {id:110,complexId:8,unit:"4501호",type:"매매",price:220000,deposit:null,monthly:null,size:114,rooms:4,baths:2,floor:45,direction:"남향",status:"판매중",description:"경동 랜드마크. 시내 최고층 조망.",photos:[],registeredAt:"2026-05-21"},
+  {id:111,complexId:9,unit:"401호",type:"매매",price:28000,deposit:null,monthly:null,size:66,rooms:2,baths:1,floor:4,direction:"남향",status:"판매중",description:"초계동 아담한 빌라. 조용하고 살기 좋음.",photos:[],registeredAt:"2026-05-22"},
+  {id:112,complexId:10,unit:"1501호",type:"전세",price:38000,deposit:38000,monthly:null,size:45,rooms:1,baths:1,floor:15,direction:"서향",status:"판매중",description:"나루동 항구뷰 오피스텔. 일몰 최고.",photos:[],registeredAt:"2026-05-23"},
+  {id:113,complexId:11,unit:"2201호",type:"매매",price:88000,deposit:null,monthly:null,size:99,rooms:3,baths:2,floor:22,direction:"남동향",status:"판매중",description:"신아동 조망 최우수. 산+바다 동시 조망.",photos:[],registeredAt:"2026-05-24"},
+  {id:114,complexId:12,unit:"3201호",type:"매매",price:175000,deposit:null,monthly:null,size:114,rooms:4,baths:2,floor:32,direction:"남향",status:"판매중",description:"2024년 신축 최고급 단지. 스카이라운지 포함.",photos:[],registeredAt:"2026-05-25"},
+  {id:115,complexId:13,unit:"1001호",type:"매매",price:92000,deposit:null,monthly:null,size:84,rooms:3,baths:2,floor:10,direction:"남향",status:"판매중",description:"섬 안 아파트. 해변 도보 1분.",photos:[],registeredAt:"2026-05-26"},
+  {id:116,complexId:14,unit:"201호",type:"전세",price:22000,deposit:22000,monthly:null,size:52,rooms:2,baths:1,floor:2,direction:"남향",status:"판매중",description:"마린뷰 힐링 빌라. 은퇴 후 생활 최적지.",photos:[],registeredAt:"2026-05-27"},
+];
+
+// ── 헬퍼 ────────────────────────────────────────────────────────────────────
+const fmt=w=>w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;
+const priceLabel=l=>l.type==="월세"?`보 ${fmt(l.deposit)} / 월 ${l.monthly}만`:fmt(l.price);
+
+// base64 이미지 변환
+function fileToBase64(file){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=e=>res(e.target.result);
+    r.onerror=rej;
+    r.readAsDataURL(file);
+  });
+}
+
+// ── 이미지 썸네일 컴포넌트 ──────────────────────────────────────────────────
+function ImgOrEmoji({photo,emoji,size=42,height=100,radius=0,style={}}){
+  if(photo){
+    return h("img",{src:photo,alt:"사진",style:{width:"100%",height,objectFit:"cover",display:"block",...style}});
+  }
+  return h("div",{style:{height,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size,...style}},emoji||"🏠");
+}
+
+// ── 사진 업로드 버튼 ────────────────────────────────────────────────────────
+function PhotoUpload({current,onUpload,label="사진 추가",multi=false}){
+  const ref=useRef();
+  const handle=async(e)=>{
+    const files=Array.from(e.target.files);
+    if(!files.length)return;
+    const b64s=await Promise.all(files.map(fileToBase64));
+    onUpload(multi?b64s:b64s[0]);
+    e.target.value="";
+  };
+  return h("div",null,
+    h("input",{type:"file",accept:"image/*",multiple:multi,ref,onChange:handle}),
+    h("button",{
+      type:"button",
+      onClick:()=>ref.current.click(),
+      style:{width:"100%",border:"2px dashed #cbd5e1",borderRadius:10,padding:"12px 0",background:current?"#f0fdf4":"#f8fafc",color:"#475569",cursor:"pointer",fontSize:13,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:8}
+    },
+      current
+        ?h(Fragment,null,h("span",{style:{fontSize:18}},"✅"),label+" 완료 (클릭하여 변경)")
+        :h(Fragment,null,h("span",{style:{fontSize:18}},"📷"),label)
+    )
+  );
+}
+
+// 여러 사진 미리보기 + 삭제
+function PhotoGrid({photos,onRemove}){
+  if(!photos||!photos.length)return null;
+  return h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginTop:8}},
+    ...photos.map((p,i)=>h("div",{key:i,style:{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden"}},
+      h("img",{src:p,alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}}),
+      onRemove&&h("button",{
+        onClick:()=>onRemove(i),
+        style:{position:"absolute",top:4,right:4,background:"rgba(0,0,0,0.6)",border:"none",borderRadius:"50%",width:22,height:22,color:"#fff",cursor:"pointer",fontSize:13,lineHeight:"22px",textAlign:"center",padding:0}
+      },"×")
+    ))
+  );
+}
+
+// 사진 슬라이더 (상세 보기)
+function PhotoSlider({photos,fallbackEmoji,color}){
+  const [idx,setIdx]=useState(0);
+  if(!photos||!photos.length){
+    return h("div",{style:{height:220,background:color?`linear-gradient(135deg,${color}ee,${color}88)`:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:72}},fallbackEmoji||"🏠");
+  }
+  return h("div",{style:{position:"relative",height:220,background:"#000",overflow:"hidden"}},
+    h("img",{src:photos[idx],alt:"",style:{width:"100%",height:220,objectFit:"cover",display:"block"}}),
+    photos.length>1&&h(Fragment,null,
+      h("button",{onClick:()=>setIdx(i=>(i-1+photos.length)%photos.length),style:{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.5)",border:"none",borderRadius:"50%",width:32,height:32,color:"#fff",cursor:"pointer",fontSize:18}},"\u2039"),
+      h("button",{onClick:()=>setIdx(i=>(i+1)%photos.length),style:{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.5)",border:"none",borderRadius:"50%",width:32,height:32,color:"#fff",cursor:"pointer",fontSize:18}},"\u203a"),
+      h("div",{style:{position:"absolute",bottom:10,left:"50%",transform:"translateX(-50%)",display:"flex",gap:5}},
+        ...photos.map((_,i)=>h("div",{key:i,style:{width:6,height:6,borderRadius:"50%",background:i===idx?"#fff":"rgba(255,255,255,0.4)",cursor:"pointer"},onClick:()=>setIdx(i)}))
+      )
+    )
+  );
+}
+
+// ── UI 원자 ─────────────────────────────────────────────────────────────────
+function Badge({children,bg="#e2e8f0",color="#475569"}){
+  return h("span",{style:{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:999,background:bg,color,display:"inline-block"}},children);
+}
+function TradeBadge({type}){
+  const m={매매:["#d1fae5","#065f46"],전세:["#e0f2fe","#0369a1"],월세:["#fef3c7","#92400e"]};
+  const [bg,c]=m[type]||["#e2e8f0","#475569"];
+  return h(Badge,{bg,color:c},type);
+}
+function GuBadge({gu}){
+  if(!gu)return null;
+  const info=DISTRICTS[gu];
+  return h(Badge,{bg:info.color+"22",color:info.color},info.emoji+" "+gu);
+}
+function Btn({children,onClick,style={},type="button"}){
+  return h("button",{type,onClick,style:{cursor:"pointer",border:"none",...style}},children);
+}
+
+// ── 모달 ────────────────────────────────────────────────────────────────────
+function ConfirmModal({message,sub,onOk,onCancel}){
+  return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",backdropFilter:"blur(4px)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}},
+    h("div",{style:{background:"#fff",borderRadius:20,padding:28,maxWidth:320,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.3)",animation:"modalIn 0.18s ease",textAlign:"center"}},
+      h("div",{style:{fontSize:36,marginBottom:12}},"🗑️"),
+      h("div",{style:{fontWeight:800,fontSize:16,color:"#0f172a",marginBottom:6}},message),
+      sub&&h("div",{style:{fontSize:13,color:"#64748b",marginBottom:4}},sub),
+      h("div",{style:{display:"flex",gap:10,marginTop:20}},
+        h(Btn,{onClick:onCancel,style:{flex:1,background:"#f1f5f9",color:"#475569",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"취소"),
+        h(Btn,{onClick:onOk,style:{flex:1,background:"#dc2626",color:"#fff",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"삭제")
+      )
+    )
+  );
+}
+function AlertModal({message,onClose}){
+  return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",backdropFilter:"blur(4px)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}},
+    h("div",{style:{background:"#fff",borderRadius:20,padding:28,maxWidth:300,width:"100%",textAlign:"center",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}},
+      h("div",{style:{fontSize:36,marginBottom:12}},"⚠️"),
+      h("div",{style:{fontWeight:700,fontSize:15,color:"#0f172a",marginBottom:20}},message),
+      h(Btn,{onClick:onClose,style:{background:"#1e40af",color:"#fff",borderRadius:10,padding:"12px 32px",fontWeight:700,fontSize:14}},"확인")
+    )
+  );
+}
+function useDialog(){
+  const [state,setState]=useState(null);
+  const confirm=useCallback((message,sub)=>new Promise(r=>setState({type:"confirm",message,sub,r})),[]);
+  const alert=useCallback((message)=>new Promise(r=>setState({type:"alert",message,r})),[]);
+  const Modal=state
+    ?(state.type==="confirm"
+        ?h(ConfirmModal,{message:state.message,sub:state.sub,onOk:()=>{setState(null);state.r(true);},onCancel:()=>{setState(null);state.r(false);}})
+        :h(AlertModal,{message:state.message,onClose:()=>{setState(null);state.r();}}))
+    :null;
+  return {confirm,alert,Modal};
+}
+
+// ── 지도 ────────────────────────────────────────────────────────────────────
+function CityMap({selected,onSelect,counts}){
+  const [hov,setHov]=useState(null);
+  return h("div",{style:{position:"relative",width:"100%",borderRadius:20,overflow:"hidden",background:"linear-gradient(160deg,#0f172a,#1e293b 60%,#0c4a6e)",boxShadow:"0 8px 32px rgba(0,0,0,0.4)"}},
+    h("svg",{viewBox:"0 0 100 95",style:{width:"100%",display:"block"}},
+      h("defs",null,h("filter",{id:"glow"},h("feGaussianBlur",{stdDeviation:"1",result:"b"}),h("feMerge",null,h("feMergeNode",{in:"b"}),h("feMergeNode",{in:"SourceGraphic"})))),
+      h("rect",{x:0,y:0,width:100,height:95,fill:"#0f172a"}),
+      ...[...Array(10)].map((_,i)=>h("line",{key:"h"+i,x1:0,y1:i*10,x2:100,y2:i*10,stroke:"rgba(14,165,233,0.05)",strokeWidth:"0.3"})),
+      ...[...Array(10)].map((_,i)=>h("line",{key:"v"+i,x1:i*10,y1:0,x2:i*10,y2:95,stroke:"rgba(14,165,233,0.05)",strokeWidth:"0.3"})),
+      ...ALL_GU.map(gu=>{
+        const info=DISTRICTS[gu],isSel=selected.includes(gu),isHov=hov===gu,cnt=counts[gu]||0;
+        return h("g",{key:gu,onClick:()=>onSelect(gu),onMouseEnter:()=>setHov(gu),onMouseLeave:()=>setHov(null),style:{cursor:"pointer"}},
+          h("path",{d:info.path,fill:isSel?info.color:isHov?info.color+"bb":info.color+"66",stroke:isSel?"#fff":info.color,strokeWidth:isSel?0.8:0.4,filter:isSel?"url(#glow)":"none",style:{transition:"all 0.25s"}}),
+          h("text",{x:info.cx,y:info.cy-2,textAnchor:"middle",fontSize:"3.2",fontWeight:isSel?"800":"600",fill:isSel||isHov?"#fff":"rgba(255,255,255,0.8)",style:{pointerEvents:"none",userSelect:"none"}},gu),
+          cnt>0&&h("g",null,
+            h("circle",{cx:info.cx+5,cy:info.cy-6,r:"3.5",fill:isSel?"#fff":"#fbbf24",stroke:info.color,strokeWidth:"0.4"}),
+            h("text",{x:info.cx+5,y:info.cy-4.8,textAnchor:"middle",fontSize:"2.5",fontWeight:"800",fill:isSel?info.color:"#0f172a",style:{pointerEvents:"none",userSelect:"none"}},cnt)
+          )
+        );
+      }),
+      h("text",{x:2,y:92,fontSize:"2.2",fill:"rgba(255,255,255,0.35)"},"숫자=매물수 / 구역 클릭으로 필터")
+    ),
+    hov&&h("div",{style:{position:"absolute",bottom:12,left:"50%",transform:"translateX(-50%)",background:"rgba(15,23,42,0.95)",backdropFilter:"blur(8px)",borderRadius:10,padding:"8px 16px",border:`1px solid ${DISTRICTS[hov].color}44`,color:"#fff",fontSize:12,fontWeight:600,whiteSpace:"nowrap",pointerEvents:"none"}},
+      `${DISTRICTS[hov].emoji} ${hov} — ${DISTRICTS[hov].desc} `,h("span",{style:{color:"#fbbf24",marginLeft:8}},`매물 ${counts[hov]||0}건`)
+    )
+  );
+}
+
+// ── 카드/상세 ─────────────────────────────────────────────────────────────
+function ListingCard({listing,complex,onClick}){
+  const info=DISTRICTS[complex?.gu];
+  const bg=info?`linear-gradient(135deg,${info.color}cc,${info.color}66)`:"#334155";
+  return h("div",{className:"card",onClick:()=>onClick(listing),style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden"}},
+    h("div",{style:{height:110,background:bg,position:"relative",overflow:"hidden"}},
+      complex?.photo
+        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}})
+        :h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:42}},complex?.thumbnail||"🏠"),
+      h("div",{style:{position:"absolute",top:10,right:10}},h(TradeBadge,{type:listing.type}))
+    ),
+    h("div",{style:{padding:14}},
+      h("div",{style:{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}},h(GuBadge,{gu:complex?.gu}),h("span",{style:{fontSize:11,color:"#94a3b8",alignSelf:"center"}},complex?.dong)),
+      h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",marginBottom:2}},`${complex?.name||""} ${listing.unit}`),
+      h("div",{style:{fontSize:19,fontWeight:900,color:"#1e40af",marginBottom:8}},priceLabel(listing)),
+      h("div",{style:{fontSize:12,color:"#64748b",display:"flex",gap:10,flexWrap:"wrap"}},
+        h("span",null,"📐"+listing.size+"㎡"),h("span",null,"🛏"+listing.rooms+"룸"),h("span",null,"🏢"+listing.floor+"층"),h("span",null,"🧭"+listing.direction)
+      )
+    )
+  );
+}
+
+function ListingDetail({listing,complex,onBack}){
+  const info=DISTRICTS[complex?.gu];
+  return h("div",{style:{maxWidth:640,margin:"0 auto",background:"#fff",borderRadius:20,overflow:"hidden",boxShadow:"0 4px 24px rgba(0,0,0,0.1)"}},
+    h("div",{style:{position:"relative"}},
+      h(PhotoSlider,{photos:listing.photos,fallbackEmoji:complex?.thumbnail,color:info?.color}),
+      h(Btn,{onClick:onBack,style:{position:"absolute",top:14,left:14,background:"rgba(0,0,0,0.45)",borderRadius:8,color:"#fff",padding:"8px 14px",fontSize:13,backdropFilter:"blur(4px)"}},"← 목록")
+    ),
+    h("div",{style:{padding:24}},
+      h("div",{style:{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}},h(TradeBadge,{type:listing.type}),h(GuBadge,{gu:complex?.gu}),h(Badge,null,complex?.type)),
+      h("h2",{style:{fontSize:20,fontWeight:800,color:"#0f172a",marginBottom:2}},`${complex?.name||""} ${listing.unit}`),
+      h("p",{style:{fontSize:13,color:"#64748b",marginBottom:12}},complex?.address),
+      h("div",{style:{fontSize:28,fontWeight:900,color:"#1e40af",marginBottom:18}},priceLabel(listing)),
+      h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,background:"#f8fafc",borderRadius:12,padding:18,marginBottom:18}},
+        ...[["전용면적",listing.size+"㎡"],["방/욕실",`${listing.rooms}/${listing.baths}`],["층수",listing.floor+"층"],["방향",listing.direction]].map(([k,v])=>
+          h("div",{key:k},h("div",{style:{fontSize:11,color:"#94a3b8",marginBottom:2}},k),h("div",{style:{fontWeight:700,color:"#1e293b"}},v))
+        )
+      ),
+      h("p",{style:{fontSize:14,color:"#475569",lineHeight:1.7,marginBottom:16}},listing.description),
+      h("div",{style:{marginBottom:16}},
+        h("div",{style:{fontWeight:700,fontSize:13,color:"#0f172a",marginBottom:6}},`단지 — ${complex?.totalUnits}세대 · ${complex?.floors}층 · ${complex?.year}년`),
+        h("div",{style:{display:"flex",flexWrap:"wrap",gap:5}},...(complex?.amenities||[]).map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a)))
+      ),
+      h(Btn,{style:{width:"100%",background:info?`linear-gradient(135deg,${info.color},${info.color}bb)`:"#1e40af",color:"#fff",borderRadius:12,padding:"14px 0",fontSize:15,fontWeight:700}},"📞 문의하기")
+    )
+  );
+}
+
+function ComplexCard({complex,listings,onClick}){
+  const info=DISTRICTS[complex.gu];
+  const cnt=listings.filter(l=>l.complexId===complex.id&&l.status==="판매중").length;
+  return h("div",{className:"card",onClick:()=>onClick(complex),style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden"}},
+    h("div",{style:{height:100,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}55)`:"#1e293b",overflow:"hidden",position:"relative"}},
+      complex.photo
+        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}})
+        :h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:38}},complex.thumbnail||"🏠")
+    ),
+    h("div",{style:{padding:14}},
+      h("div",{style:{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}},h(GuBadge,{gu:complex.gu}),h(Badge,null,complex.type)),
+      h("div",{style:{fontWeight:700,fontSize:15,color:"#0f172a",marginBottom:2}},complex.name),
+      h("div",{style:{fontSize:11,color:"#94a3b8",marginBottom:6}},`${complex.dong} · ${complex.totalUnits}세대 · ${complex.floors}층`),
+      h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12}},
+        h("span",{style:{color:"#94a3b8"}},complex.year+"년"),
+        h("span",{style:{color:cnt>0?"#1e40af":"#94a3b8",fontWeight:700}},"매물 "+cnt+"건")
+      )
+    )
+  );
+}
+
+function ComplexDetail({complex,listings,onBack,onListingClick}){
+  const info=DISTRICTS[complex.gu];
+  const mine=listings.filter(l=>l.complexId===complex.id&&l.status==="판매중");
+  return h("div",null,
+    h("div",{style:{borderRadius:20,overflow:"hidden",marginBottom:18,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",position:"relative"}},
+      complex.photo
+        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:180,objectFit:"cover",display:"block"}})
+        :h("div",{style:{height:180,background:info?`linear-gradient(135deg,${info.color}dd,${info.color}88)`:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:56}},complex.thumbnail||"🏠"),
+      h(Btn,{onClick:onBack,style:{position:"absolute",top:14,left:14,background:"rgba(0,0,0,0.45)",borderRadius:8,color:"#fff",padding:"7px 12px",fontSize:13,backdropFilter:"blur(4px)"}},"← 목록"),
+      h("div",{style:{position:"absolute",bottom:0,left:0,right:0,background:"linear-gradient(transparent,rgba(0,0,0,0.7)",padding:"32px 20px 16px"}},
+        h("div",{style:{fontWeight:900,fontSize:20,color:"#fff"}},complex.name),
+        h("div",{style:{fontSize:13,color:"rgba(255,255,255,0.7)"}},complex.address)
+      )
+    ),
+    h("div",{style:{display:"flex",gap:18,background:"#fff",borderRadius:12,padding:16,marginBottom:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}},
+      ...[["총세대",complex.totalUnits+"세대"],["층수",complex.floors+"층"],["준공",complex.year+"년"]].map(([k,v])=>
+        h("div",{key:k},h("div",{style:{fontSize:10,color:"#94a3b8"}},k),h("div",{style:{fontSize:14,fontWeight:700,color:"#0f172a"}},v))
+      )
+    ),
+    h("div",{style:{marginBottom:14,display:"flex",flexWrap:"wrap",gap:5}},...complex.amenities.map(a=>h(Badge,{key:a,bg:"#e0f2fe",color:"#0369a1"},a))),
+    h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",marginBottom:10}},`현재 매물 (${mine.length}건)`),
+    mine.length===0?h("div",{style:{textAlign:"center",padding:40,color:"#94a3b8"}},"매물 없음"):
+    h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+      ...mine.map(l=>h("div",{key:l.id,className:"card",onClick:()=>onListingClick(l),style:{background:"#fff",borderRadius:12,padding:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+        h("div",null,
+          h("div",{style:{display:"flex",gap:6,marginBottom:4}},h(TradeBadge,{type:l.type})),
+          h("div",{style:{fontWeight:700,color:"#0f172a"}},`${l.unit} · ${l.floor}층 · ${l.size}㎡`),
+          h("div",{style:{fontSize:12,color:"#64748b"}},`${l.rooms}룸 · ${l.direction}`)
+        ),
+        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},priceLabel(l))
+      ))
+    )
+  );
+}
+
+// ── 사용자 앱 ───────────────────────────────────────────────────────────────
+function UserApp({listings,complexes}){
+  const [tab,setTab]=useState("map");
+  const [selGus,setSelGus]=useState([]);
+  const [selDong,setSelDong]=useState("전체");
+  const [trade,setTrade]=useState("전체");
+  const [propType,setPropType]=useState("전체");
+  const [kw,setKw]=useState("");
+  const [selL,setSelL]=useState(null);
+  const [selCx,setSelCx]=useState(null);
+  const [fromCxL,setFromCxL]=useState(null);
+
+  const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
+
+  const counts=useMemo(()=>{
+    const c={};
+    ALL_GU.forEach(gu=>{const ids=complexes.filter(cx=>cx.gu===gu).map(cx=>cx.id);c[gu]=listings.filter(l=>ids.includes(l.complexId)&&l.status==="판매중").length;});
+    return c;
+  },[listings,complexes]);
+
+  const dongs=useMemo(()=>selGus.length===0?["전체"]:["전체",...selGus.flatMap(g=>DISTRICTS[g].dongs)],[selGus]);
+
+  const filtered=useMemo(()=>listings.filter(l=>{
+    if(l.status!=="판매중")return false;
+    const c=complexes.find(cx=>cx.id===l.complexId);if(!c)return false;
+    if(selGus.length>0&&!selGus.includes(c.gu))return false;
+    if(selDong!=="전체"&&c.dong!==selDong)return false;
+    if(trade!=="전체"&&l.type!==trade)return false;
+    if(propType!=="전체"&&c.type!==propType)return false;
+    if(kw&&!c.name.includes(kw)&&!c.address.includes(kw))return false;
+    return true;
+  }),[listings,complexes,selGus,selDong,trade,propType,kw]);
+
+  const filtCx=useMemo(()=>complexes.filter(c=>{
+    if(selGus.length>0&&!selGus.includes(c.gu))return false;
+    if(selDong!=="전체"&&c.dong!==selDong)return false;
+    if(propType!=="전체"&&c.type!==propType)return false;
+    if(kw&&!c.name.includes(kw))return false;
+    return true;
+  }),[complexes,selGus,selDong,propType,kw]);
+
+  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null)});}
+  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null)});}
+  if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>setSelCx(null),onListingClick:l=>{setFromCxL(l);setSelCx(null);}});}
+
+  const tabS=v=>({flex:1,padding:"9px 0",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b",transition:"all 0.2s"});
+  const guS=gu=>{const info=DISTRICTS[gu],isSel=selGus.includes(gu);return{padding:"5px 10px",border:`2px solid ${isSel?info.color:"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:isSel?info.color+"22":"#f8fafc",color:isSel?info.color:"#64748b"};};
+  const dongS=d=>({padding:"4px 10px",border:`1.5px solid ${selDong===d?"#1e40af":"#e2e8f0"}`,borderRadius:7,cursor:"pointer",fontSize:11,fontWeight:700,background:selDong===d?"#dbeafe":"#f8fafc",color:selDong===d?"#1e40af":"#64748b"});
+
+  return h("div",null,
+    h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}},
+      ...["map","listings","complexes"].map((v,i)=>h(Btn,{key:v,onClick:()=>setTab(v),style:tabS(v)},["🗺️ 지도","🏠 매물","🏢 단지"][i]))
+    ),
+    tab==="map"&&h("div",null,
+      h(CityMap,{selected:selGus,onSelect:gu=>{toggleGu(gu);setTimeout(()=>setTab("listings"),300);},counts}),
+      h("div",{style:{marginTop:14,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:8}},
+        ...ALL_GU.map(gu=>{const info=DISTRICTS[gu],isSel=selGus.includes(gu);return h(Btn,{key:gu,onClick:()=>toggleGu(gu),style:{background:isSel?info.color:"#fff",border:`2px solid ${isSel?info.color:"#e2e8f0"}`,borderRadius:12,padding:"10px 8px",textAlign:"left",transition:"all 0.2s"}},
+          h("div",{style:{fontSize:18,marginBottom:3}},info.emoji),
+          h("div",{style:{fontSize:13,fontWeight:700,color:isSel?"#fff":"#0f172a"}},gu),
+          h("div",{style:{fontSize:11,color:isSel?"rgba(255,255,255,0.7)":"#94a3b8"}},(counts[gu]||0)+"건")
+        );}))
+    ),
+    (tab==="listings"||tab==="complexes")&&h("div",{style:{background:"#fff",borderRadius:16,padding:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",marginBottom:16}},
+      h("input",{value:kw,onChange:e=>setKw(e.target.value),placeholder:"🔍 단지명, 주소 검색...",style:{width:"100%",border:"2px solid #e2e8f0",borderRadius:10,padding:"9px 12px",fontSize:13,outline:"none",marginBottom:10,boxSizing:"border-box"}}),
+      h("div",{style:{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}},...ALL_GU.map(gu=>h(Btn,{key:gu,onClick:()=>toggleGu(gu),style:guS(gu)},DISTRICTS[gu].emoji+" "+gu))),
+      selGus.length>0&&dongs.length>1&&h("div",{style:{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}},...dongs.map(d=>h(Btn,{key:d,onClick:()=>setSelDong(d),style:dongS(d)},d))),
+      h("div",{style:{display:"flex",gap:8}},
+        tab==="listings"&&h("select",{value:trade,onChange:e=>setTrade(e.target.value),style:{border:"2px solid #e2e8f0",borderRadius:8,padding:"6px 10px",fontSize:12,background:"#f8fafc"}},...["전체","매매","전세","월세"].map(t=>h("option",{key:t},t))),
+        h("select",{value:propType,onChange:e=>setPropType(e.target.value),style:{border:"2px solid #e2e8f0",borderRadius:8,padding:"6px 10px",fontSize:12,background:"#f8fafc"}},...["전체","아파트","오피스텔","빌라"].map(t=>h("option",{key:t},t))),
+        (selGus.length>0||trade!=="전체"||propType!=="전체"||kw)&&h(Btn,{onClick:()=>{setSelGus([]);setTrade("전체");setPropType("전체");setKw("");setSelDong("전체");},style:{fontSize:12,color:"#ef4444",background:"#fff0f0",border:"2px solid #fecaca",borderRadius:8,padding:"6px 10px",fontWeight:600}},"초기화")
+      )
+    ),
+    tab==="listings"&&h("div",null,
+      h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtered.length),"건"),
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:setSelL}))),
+      filtered.length===0&&h("div",{style:{textAlign:"center",padding:60,color:"#94a3b8"}},"해당 조건의 매물이 없습니다")
+    ),
+    tab==="complexes"&&h("div",null,
+      h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtCx.length),"개"),
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:14}},...filtCx.map(c=>h(ComplexCard,{key:c.id,complex:c,listings,onClick:setSelCx})))
+    )
+  );
+}
+
+// ── 관리자 앱 ───────────────────────────────────────────────────────────────
+function AdminApp({listings,setListings,complexes,setComplexes}){
+  const [tab,setTab]=useState("listings");
+  const [showForm,setShowForm]=useState(false);
+  const [editItem,setEditItem]=useState(null);
+  const {confirm,alert,Modal}=useDialog();
+
+  const emptyL={complexId:"",unit:"",type:"매매",price:"",deposit:"",monthly:"",size:"",rooms:1,baths:1,floor:"",direction:"남향",status:"판매중",description:"",photos:[]};
+  const emptyC={name:"",gu:"청해구",dong:"",address:"",type:"아파트",totalUnits:"",floors:"",year:"",amenities:"",thumbnail:"🏠",photo:null};
+  const [lForm,setLForm]=useState(emptyL);
+  const [cForm,setCForm]=useState(emptyC);
+
+  const iS={width:"100%",border:"1.5px solid #e2e8f0",borderRadius:8,padding:"9px 12px",fontSize:13,background:"#f8fafc",outline:"none",boxSizing:"border-box"};
+  const lS={fontSize:12,fontWeight:600,color:"#475569",marginBottom:4,display:"block"};
+  const fld=(label,node)=>h("div",{key:label,style:{marginBottom:12}},h("label",{style:lS},label),node);
+  const rowS=(bg,color)=>({background:bg,border:"none",borderRadius:7,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600,color});
+
+  const saveL=()=>{
+    const d={...lForm,complexId:Number(lForm.complexId),price:Number(lForm.price),deposit:lForm.deposit?Number(lForm.deposit):null,monthly:lForm.monthly?Number(lForm.monthly):null,size:Number(lForm.size),rooms:Number(lForm.rooms),baths:Number(lForm.baths),floor:Number(lForm.floor),registeredAt:new Date().toISOString().split("T")[0]};
+    let updated;
+    if(editItem)updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
+    else updated=[...listings,{...d,id:Date.now()}];
+    setListings(updated);lsSet(LS_LISTINGS,updated);setShowForm(false);
+  };
+  const saveC=()=>{
+    const d={...cForm,totalUnits:Number(cForm.totalUnits),floors:Number(cForm.floors),year:Number(cForm.year),amenities:cForm.amenities.split(",").map(s=>s.trim()).filter(Boolean)};
+    let updated;
+    if(editItem)updated=complexes.map(c=>c.id===editItem.id?{...d,id:editItem.id}:c);
+    else updated=[...complexes,{...d,id:Date.now()}];
+    setComplexes(updated);lsSet(LS_COMPLEXES,updated);setShowForm(false);
+  };
+
+  const stats=useMemo(()=>({total:listings.length,active:listings.filter(l=>l.status==="판매중").length,done:listings.filter(l=>l.status==="거래완료").length,cx:complexes.length}),[listings,complexes]);
+  const tabS=v=>({flex:1,padding:"9px 0",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:14,background:tab===v?"#dc2626":"transparent",color:tab===v?"#fff":"#64748b"});
+
+  return h("div",null,
+    Modal,
+    // 통계
+    h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:18}},
+      ...[["총 매물",stats.total,"#6366f1"],["판매중",stats.active,"#10b981"],["거래완료",stats.done,"#64748b"],["단지수",stats.cx,"#f59e0b"]].map(([k,v,c])=>
+        h("div",{key:k,style:{background:"#fff",borderRadius:12,padding:"12px 8px",textAlign:"center",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",borderTop:`3px solid ${c}`}},
+          h("div",{style:{fontSize:20,fontWeight:900,color:c}},v),h("div",{style:{fontSize:11,color:"#64748b",marginTop:2}},k)
+        )
+      )
+    ),
+    h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}},
+      h(Btn,{onClick:()=>{setTab("listings");setShowForm(false);},style:tabS("listings")},"📋 매물"),
+      h(Btn,{onClick:()=>{setTab("complexes");setShowForm(false);},style:tabS("complexes")},"🏢 단지")
+    ),
+
+    // ─ 매물 목록 ─
+    tab==="listings"&&!showForm&&h("div",null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("span",{style:{fontWeight:700,color:"#0f172a"}},`매물 목록 (${listings.length}건)`),
+        h(Btn,{onClick:()=>{setLForm(emptyL);setEditItem(null);setShowForm(true);},style:{background:"#dc2626",color:"#fff",borderRadius:8,padding:"8px 14px",fontWeight:700,fontSize:13}},"+ 매물 등록")
+      ),
+      h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        ...listings.map(l=>{
+          const c=complexes.find(cx=>cx.id===l.complexId),info=c?DISTRICTS[c.gu]:null;
+          return h("div",{key:l.id,style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",borderLeft:`4px solid ${info?.color||"#e2e8f0"}`}},
+            // 사진 썸네일
+            h("div",{style:{width:72,flexShrink:0,background:info?`linear-gradient(135deg,${info.color}99,${info.color}55)`:"#e2e8f0",position:"relative",overflow:"hidden"}},
+              (l.photos&&l.photos[0])?h("img",{src:l.photos[0],alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}}):
+              h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}},c?.thumbnail||"🏠")
+            ),
+            h("div",{style:{flex:1,padding:12}},
+              h("div",{style:{display:"flex",gap:6,marginBottom:4}},h(TradeBadge,{type:l.type}),h("span",{style:{fontSize:11,padding:"2px 6px",borderRadius:6,background:l.status==="판매중"?"#d1fae5":"#f1f5f9",color:l.status==="판매중"?"#065f46":"#64748b",fontWeight:600}},l.status)),
+              h("div",{style:{fontWeight:700,color:"#0f172a",fontSize:14}},`${c?.name||"?"} ${l.unit}`),
+              h("div",{style:{fontSize:12,color:"#64748b"}},`${c?.gu||""} ${c?.dong||""} · ${l.size}㎡ · ${l.floor}층`),
+              h("div",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l))
+            ),
+            h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
+              h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId)});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
+              h(Btn,{onClick:async()=>{const ok=await confirm("매물을 삭제할까요?",`${c?.name||""} ${l.unit}`);if(ok){const u=listings.filter(x=>x.id!==l.id);setListings(u);lsSet(LS_LISTINGS,u);}},style:rowS("#fee2e2","#dc2626")},"삭제"),
+              h(Btn,{onClick:()=>{const u=listings.map(x=>x.id===l.id?{...x,status:x.status==="판매중"?"거래완료":"판매중"}:x);setListings(u);lsSet(LS_LISTINGS,u);},style:rowS("#fff7ed","#ea580c")},l.status==="판매중"?"완료":"재등록")
+            )
+          );
+        })
+      )
+    ),
+
+    // ─ 매물 폼 ─
+    tab==="listings"&&showForm&&h("div",{style:{background:"#fff",borderRadius:16,padding:22,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}},
+      h("div",{style:{fontWeight:800,fontSize:16,color:"#0f172a",marginBottom:16}},editItem?"매물 수정":"새 매물 등록"),
+      fld("단지 선택",h("select",{value:lForm.complexId,onChange:e=>setLForm(f=>({...f,complexId:e.target.value})),style:iS},h("option",{value:""},"선택"),...complexes.map(c=>h("option",{key:c.id,value:c.id},`${c.name} (${c.gu} ${c.dong})`)))),
+      fld("호수",h("input",{value:lForm.unit,onChange:e=>setLForm(f=>({...f,unit:e.target.value})),placeholder:"예: 1502호",style:iS})),
+      fld("거래유형",h("select",{value:lForm.type,onChange:e=>setLForm(f=>({...f,type:e.target.value})),style:iS},...["매매","전세","월세"].map(t=>h("option",{key:t},t)))),
+      fld(lForm.type==="월세"?"보증금 (만원)":"가격 (만원)",h("input",{type:"number",value:lForm.price,onChange:e=>setLForm(f=>({...f,price:e.target.value})),style:iS})),
+      lForm.type==="월세"&&fld("월세 (만원)",h("input",{type:"number",value:lForm.monthly,onChange:e=>setLForm(f=>({...f,monthly:e.target.value})),style:iS})),
+      h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}},
+        fld("면적(㎡)",h("input",{type:"number",value:lForm.size,onChange:e=>setLForm(f=>({...f,size:e.target.value})),style:iS})),
+        fld("층수",h("input",{type:"number",value:lForm.floor,onChange:e=>setLForm(f=>({...f,floor:e.target.value})),style:iS})),
+        fld("방 수",h("input",{type:"number",value:lForm.rooms,onChange:e=>setLForm(f=>({...f,rooms:e.target.value})),style:iS})),
+        fld("욕실 수",h("input",{type:"number",value:lForm.baths,onChange:e=>setLForm(f=>({...f,baths:e.target.value})),style:iS}))
+      ),
+      fld("방향",h("select",{value:lForm.direction,onChange:e=>setLForm(f=>({...f,direction:e.target.value})),style:iS},...["남향","동향","서향","북향","남동향","남서향"].map(d=>h("option",{key:d},d)))),
+      fld("상태",h("select",{value:lForm.status,onChange:e=>setLForm(f=>({...f,status:e.target.value})),style:iS},...["판매중","거래완료","예약중"].map(s=>h("option",{key:s},s)))),
+      fld("설명",h("textarea",{value:lForm.description,onChange:e=>setLForm(f=>({...f,description:e.target.value})),rows:3,style:{...iS,resize:"vertical"}})),
+      // 매물 사진
+      fld("매물 사진 (최대 5장)",h("div",null,
+        h(PhotoUpload,{current:lForm.photos&&lForm.photos.length>0,label:"사진 추가",multi:true,onUpload:async(b64s)=>{const merged=[...(lForm.photos||[]),...b64s].slice(0,5);setLForm(f=>({...f,photos:merged}));}}),
+        h(PhotoGrid,{photos:lForm.photos,onRemove:i=>setLForm(f=>({...f,photos:f.photos.filter((_,j)=>j!==i)}))})
+      )),
+      h("div",{style:{display:"flex",gap:10,marginTop:6}},
+        h(Btn,{onClick:saveL,style:{flex:1,background:"#dc2626",color:"#fff",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"저장"),
+        h(Btn,{onClick:()=>setShowForm(false),style:{flex:1,background:"#f1f5f9",color:"#475569",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"취소")
+      )
+    ),
+
+    // ─ 단지 목록 ─
+    tab==="complexes"&&!showForm&&h("div",null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("span",{style:{fontWeight:700,color:"#0f172a"}},`단지 목록 (${complexes.length}개)`),
+        h(Btn,{onClick:()=>{setCForm(emptyC);setEditItem(null);setShowForm(true);},style:{background:"#dc2626",color:"#fff",borderRadius:8,padding:"8px 14px",fontWeight:700,fontSize:13}},"+ 단지 등록")
+      ),
+      h("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        ...complexes.map(c=>{
+          const info=DISTRICTS[c.gu],cnt=listings.filter(l=>l.complexId===c.id).length;
+          return h("div",{key:c.id,style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",borderLeft:`4px solid ${info?.color||"#e2e8f0"}`}},
+            h("div",{style:{width:72,flexShrink:0,background:info?`linear-gradient(135deg,${info.color}99,${info.color}55)`:"#e2e8f0",overflow:"hidden"}},
+              c.photo?h("img",{src:c.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"cover"}}):
+              h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}},c.thumbnail||"🏠")
+            ),
+            h("div",{style:{flex:1,padding:12}},
+              h("div",{style:{display:"flex",gap:5,marginBottom:3}},h(GuBadge,{gu:c.gu}),h(Badge,null,c.type)),
+              h("div",{style:{fontWeight:700,color:"#0f172a"}},c.name),
+              h("div",{style:{fontSize:12,color:"#64748b"}},`${c.dong} · ${c.totalUnits}세대 · 매물 ${cnt}건`)
+            ),
+            h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
+              h(Btn,{onClick:()=>{setCForm({...c,amenities:c.amenities.join(", ")});setEditItem(c);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
+              h(Btn,{onClick:async()=>{
+                if(listings.some(l=>l.complexId===c.id)){await alert("이 단지에 매물이 있어 삭제할 수 없습니다.");return;}
+                const ok=await confirm("단지를 삭제할까요?",c.name);
+                if(ok){const u=complexes.filter(x=>x.id!==c.id);setComplexes(u);lsSet(LS_COMPLEXES,u);}
+              },style:rowS("#fee2e2","#dc2626")},"삭제")
+            )
+          );
+        })
+      )
+    ),
+
+    // ─ 단지 폼 ─
+    tab==="complexes"&&showForm&&h("div",{style:{background:"#fff",borderRadius:16,padding:22,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}},
+      h("div",{style:{fontWeight:800,fontSize:16,color:"#0f172a",marginBottom:16}},editItem?"단지 수정":"새 단지 등록"),
+      fld("단지명",h("input",{value:cForm.name,onChange:e=>setCForm(f=>({...f,name:e.target.value})),placeholder:"예: 오션뷰 아파트",style:iS})),
+      fld("이모지 아이콘 (사진이 없을 때)",h("input",{value:cForm.thumbnail,onChange:e=>setCForm(f=>({...f,thumbnail:e.target.value})),style:iS})),
+      fld("대표 사진",h("div",null,
+        cForm.photo&&h("img",{src:cForm.photo,alt:"",style:{width:"100%",height:140,objectFit:"cover",borderRadius:10,marginBottom:8}}),
+        h(PhotoUpload,{current:!!cForm.photo,label:"단지 대표사진 업로드",onUpload:b64=>setCForm(f=>({...f,photo:b64}))}),
+        cForm.photo&&h(Btn,{onClick:()=>setCForm(f=>({...f,photo:null})),style:{marginTop:6,fontSize:12,color:"#ef4444",background:"#fff0f0",border:"none",borderRadius:6,padding:"5px 10px",cursor:"pointer"}},"사진 제거")
+      )),
+      fld("구 선택",h("select",{value:cForm.gu,onChange:e=>setCForm(f=>({...f,gu:e.target.value,dong:""})),style:iS},...ALL_GU.map(g=>h("option",{key:g},g)))),
+      fld("동 선택",h("select",{value:cForm.dong,onChange:e=>setCForm(f=>({...f,dong:e.target.value})),style:iS},h("option",{value:""},"선택"),...(DISTRICTS[cForm.gu]?.dongs||[]).map(d=>h("option",{key:d},d)))),
+      fld("주소",h("input",{value:cForm.address,onChange:e=>setCForm(f=>({...f,address:e.target.value})),style:iS})),
+      fld("유형",h("select",{value:cForm.type,onChange:e=>setCForm(f=>({...f,type:e.target.value})),style:iS},...["아파트","오피스텔","빌라"].map(t=>h("option",{key:t},t)))),
+      h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}},
+        fld("총세대",h("input",{type:"number",value:cForm.totalUnits,onChange:e=>setCForm(f=>({...f,totalUnits:e.target.value})),style:iS})),
+        fld("층수",h("input",{type:"number",value:cForm.floors,onChange:e=>setCForm(f=>({...f,floors:e.target.value})),style:iS})),
+        fld("준공년도",h("input",{type:"number",value:cForm.year,onChange:e=>setCForm(f=>({...f,year:e.target.value})),placeholder:"2024",style:iS}))
+      ),
+      fld("편의시설 (쉼표 구분)",h("input",{value:cForm.amenities,onChange:e=>setCForm(f=>({...f,amenities:e.target.value})),placeholder:"수영장, 헬스장, 주차장",style:iS})),
+      h("div",{style:{display:"flex",gap:10,marginTop:6}},
+        h(Btn,{onClick:saveC,style:{flex:1,background:"#dc2626",color:"#fff",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"저장"),
+        h(Btn,{onClick:()=>setShowForm(false),style:{flex:1,background:"#f1f5f9",color:"#475569",borderRadius:10,padding:"12px 0",fontWeight:700,fontSize:14}},"취소")
+      )
+    )
+  );
+}
+
+// ── 루트 ────────────────────────────────────────────────────────────────────
+function App(){
+  const [mode,setMode]=useState("user");
+  const [complexes,setComplexes]=useState(()=>lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES));
+  const [listings,setListings]=useState(()=>lsGet(LS_LISTINGS,DEFAULT_LISTINGS));
+
+  const headerBg=mode==="user"?"linear-gradient(135deg,#0f172a,#1e3a5f 60%,#0c4a6e)":"linear-gradient(135deg,#7f1d1d,#991b1b,#dc2626)";
+  const modeBtn=(v,label)=>h(Btn,{onClick:()=>setMode(v),style:{padding:"7px 12px",borderRadius:8,fontSize:12,fontWeight:700,background:mode===v?"rgba(255,255,255,0.18)":"transparent",color:mode===v?"#fff":"rgba(255,255,255,0.45)"}},label);
+
+  return h("div",{style:{minHeight:"100vh",background:mode==="user"?"#f0f4f8":"#fff5f5"}},
+    h("div",{style:{background:headerBg,padding:"0 20px",boxShadow:"0 4px 20px rgba(0,0,0,0.3)",position:"sticky",top:0,zIndex:100}},
+      h("div",{style:{maxWidth:960,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center",height:58}},
+        h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+          h("span",{style:{fontSize:22}},"🏙️"),
+          h("div",null,
+            h("div",{style:{color:"#fff",fontWeight:900,fontSize:17}},"가상도시 부동산"),
+            h("div",{style:{color:"rgba(255,255,255,0.4)",fontSize:10}},mode==="user"?"7개 구 · 22개 동":"관리자 콘솔")
+          )
+        ),
+        h("div",{style:{display:"flex",gap:4}},modeBtn("user","🏠 사용자"),modeBtn("admin","⚙️ 관리자"))
+      )
+    ),
+    mode==="admin"&&h("div",{style:{background:"#dc2626",padding:"6px 20px",textAlign:"center"}},
+      h("span",{style:{color:"#fff",fontSize:11,fontWeight:600}},"⚠️ 관리자 전용 — 변경사항 자동 저장")
+    ),
+    h("div",{style:{maxWidth:960,margin:"0 auto",padding:"22px 14px 80px"}},
+      mode==="user"?h(UserApp,{listings,complexes}):h(AdminApp,{listings,setListings,complexes,setComplexes})
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App,null));
+</script>
+</body>
+</html>
