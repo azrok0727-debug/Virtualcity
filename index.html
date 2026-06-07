@@ -93,7 +93,63 @@ const DEFAULT_LISTINGS=[
 
 // ── 헬퍼 ────────────────────────────────────────────────────────────────────
 const fmt=w=>w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;
-const priceLabel=l=>l.type==="월세"?`보 ${fmt(l.deposit)} / 월 ${l.monthly}만`:fmt(l.price);
+// ── 동적 가격 엔진 ───────────────────────────────────────────────────────────
+function calcDynamicPrice(listing, allListings, complexes){
+  if(!listing||!allListings||!complexes) return null;
+  const complex=complexes.find(c=>c.id===listing.complexId);
+  if(!complex) return null;
+
+  // 같은 단지+거래유형 판매중 매물 수
+  const sameActive=allListings.filter(l=>
+    l.complexId===listing.complexId && l.type===listing.type && l.status==="판매중"
+  ).length;
+
+  // 같은 구 전체 판매중 매물 수
+  const guIds=complexes.filter(c=>c.gu===complex.gu).map(c=>c.id);
+  const guActive=allListings.filter(l=>guIds.includes(l.complexId)&&l.status==="판매중").length;
+
+  // 등록일 경과일
+  const daysSince=Math.max(0,Math.floor((Date.now()-new Date(listing.registeredAt||Date.now()))/(86400000)));
+
+  // 수급 압력 계산
+  const supplyP=-(sameActive-1)*0.018;  // 매물 추가될수록 -1.8%씩
+  const guP=-(guActive-5)*0.004;         // 구 전체 과잉시 추가 하락
+  const timeP=daysSince>30?-(daysSince-30)*0.0003:daysSince*0.0004; // 30일전=상승, 이후=하락
+
+  const pct=Math.max(-0.25,Math.min(0.20,supplyP+guP+timeP));
+  const adj=v=>v!=null?Math.round(v*(1+pct)/100)*100:null;
+  return {
+    price:adj(listing.price)||listing.price,
+    deposit:adj(listing.deposit),
+    monthly:listing.monthly?Math.round(listing.monthly*(1+pct)):null,
+    pct:Math.round(pct*1000)/10
+  };
+}
+
+function PriceTag({pct}){
+  if(!pct||Math.abs(pct)<0.3) return null;
+  const up=pct>0;
+  return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,
+    background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a",marginLeft:5,verticalAlign:"middle"}},
+    (up?"▲":"▼")+Math.abs(pct)+"%"
+  );
+}
+
+function priceLabel(listing, allListings, complexes){
+  const dp=(allListings&&complexes)?calcDynamicPrice(listing,allListings,complexes):null;
+  const p=dp||listing;
+  const base=listing.type==="월세"
+    ?`보 ${fmt(p.deposit!=null?p.deposit:listing.deposit)} / 월 ${p.monthly!=null?p.monthly:listing.monthly}만`
+    :fmt(p.price!=null?p.price:listing.price);
+  if(!dp||Math.abs(dp.pct)<0.3) return base;
+  return h(Fragment,null,base,h(PriceTag,{pct:dp.pct}));
+}
+
+// 단지 선택 드롭다운 라벨 — 오피스텔(오), 빌라(빌) 표시
+function complexLabel(c){
+  const tag=c.type==="오피스텔"?" (오)":c.type==="빌라"?" (빌)":"";
+  return c.name+tag+" — "+c.gu+" "+c.dong;
+}
 
 // base64 이미지 변환
 function fileToBase64(file){
@@ -251,7 +307,7 @@ function CityMap({selected,onSelect,counts}){
 }
 
 // ── 카드/상세 ─────────────────────────────────────────────────────────────
-function ListingCard({listing,complex,onClick}){
+function ListingCard({listing,complex,onClick,allListings,allComplexes}){
   const info=DISTRICTS[complex?.gu];
   const bg=info?`linear-gradient(135deg,${info.color}cc,${info.color}66)`:"#334155";
   return h("div",{className:"card",onClick:()=>onClick(listing),style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden"}},
@@ -264,7 +320,7 @@ function ListingCard({listing,complex,onClick}){
     h("div",{style:{padding:14}},
       h("div",{style:{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}},h(GuBadge,{gu:complex?.gu}),h("span",{style:{fontSize:11,color:"#94a3b8",alignSelf:"center"}},complex?.dong)),
       h("div",{style:{fontWeight:700,fontSize:14,color:"#0f172a",marginBottom:2}},`${complex?.name||""} ${listing.unit}`),
-      h("div",{style:{fontSize:19,fontWeight:900,color:"#1e40af",marginBottom:8}},priceLabel(listing)),
+      h("div",{style:{fontSize:19,fontWeight:900,color:"#1e40af",marginBottom:8}},priceLabel(listing,allListings,allComplexes)),
       h("div",{style:{fontSize:12,color:"#64748b",display:"flex",gap:10,flexWrap:"wrap"}},
         h("span",null,"📐"+listing.size+"㎡"),h("span",null,"🛏"+listing.rooms+"룸"),h("span",null,"🏢"+listing.floor+"층"),h("span",null,"🧭"+listing.direction)
       )
@@ -272,7 +328,7 @@ function ListingCard({listing,complex,onClick}){
   );
 }
 
-function ListingDetail({listing,complex,onBack}){
+function ListingDetail({listing,complex,onBack,allListings,allComplexes}){
   const info=DISTRICTS[complex?.gu];
   return h("div",{style:{maxWidth:640,margin:"0 auto",background:"#fff",borderRadius:20,overflow:"hidden",boxShadow:"0 4px 24px rgba(0,0,0,0.1)"}},
     h("div",{style:{position:"relative"}},
@@ -283,7 +339,7 @@ function ListingDetail({listing,complex,onBack}){
       h("div",{style:{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}},h(TradeBadge,{type:listing.type}),h(GuBadge,{gu:complex?.gu}),h(Badge,null,complex?.type)),
       h("h2",{style:{fontSize:20,fontWeight:800,color:"#0f172a",marginBottom:2}},`${complex?.name||""} ${listing.unit}`),
       h("p",{style:{fontSize:13,color:"#64748b",marginBottom:12}},complex?.address),
-      h("div",{style:{fontSize:28,fontWeight:900,color:"#1e40af",marginBottom:18}},priceLabel(listing)),
+      h("div",{style:{fontSize:28,fontWeight:900,color:"#1e40af",marginBottom:18}},priceLabel(listing,allListings,allComplexes)),
       h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,background:"#f8fafc",borderRadius:12,padding:18,marginBottom:18}},
         ...[["전용면적",listing.size+"㎡"],["방/욕실",`${listing.rooms}/${listing.baths}`],["층수",listing.floor+"층"],["방향",listing.direction]].map(([k,v])=>
           h("div",{key:k},h("div",{style:{fontSize:11,color:"#94a3b8",marginBottom:2}},k),h("div",{style:{fontWeight:700,color:"#1e293b"}},v))
@@ -349,7 +405,7 @@ function ComplexDetail({complex,listings,onBack,onListingClick}){
           h("div",{style:{fontWeight:700,color:"#0f172a"}},`${l.unit} · ${l.floor}층 · ${l.size}㎡`),
           h("div",{style:{fontSize:12,color:"#64748b"}},`${l.rooms}룸 · ${l.direction}`)
         ),
-        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},priceLabel(l))
+        h("div",{style:{fontSize:16,fontWeight:800,color:"#1e40af"}},priceLabel(l,listings,complexes))
       ))
     )
   );
@@ -396,8 +452,8 @@ function UserApp({listings,complexes}){
     return true;
   }),[complexes,selGus,selDong,propType,kw]);
 
-  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null)});}
-  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null)});}
+  if(fromCxL){const c=complexes.find(cx=>cx.id===fromCxL.complexId);return h(ListingDetail,{listing:fromCxL,complex:c,onBack:()=>setFromCxL(null),allListings:listings,allComplexes:complexes});}
+  if(selL){const c=complexes.find(cx=>cx.id===selL.complexId);return h(ListingDetail,{listing:selL,complex:c,onBack:()=>setSelL(null),allListings:listings,allComplexes:complexes});}
   if(selCx){return h(ComplexDetail,{complex:selCx,listings,onBack:()=>setSelCx(null),onListingClick:l=>{setFromCxL(l);setSelCx(null);}});}
 
   const tabS=v=>({flex:1,padding:"9px 0",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,background:tab===v?"#0f172a":"transparent",color:tab===v?"#fff":"#64748b",transition:"all 0.2s"});
@@ -429,7 +485,7 @@ function UserApp({listings,complexes}){
     ),
     tab==="listings"&&h("div",null,
       h("div",{style:{fontSize:13,color:"#64748b",marginBottom:12}},"총 ",h("strong",{style:{color:"#0f172a"}},filtered.length),"건"),
-      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:setSelL}))),
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}},...filtered.map(l=>h(ListingCard,{key:l.id,listing:l,complex:complexes.find(c=>c.id===l.complexId),onClick:setSelL,allListings:listings,allComplexes:complexes}))),
       filtered.length===0&&h("div",{style:{textAlign:"center",padding:60,color:"#94a3b8"}},"해당 조건의 매물이 없습니다")
     ),
     tab==="complexes"&&h("div",null,
@@ -484,6 +540,10 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
         )
       )
     ),
+    h("div",{style:{background:"linear-gradient(135deg,#eff6ff,#dbeafe)",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#1e40af",lineHeight:1.6}},
+      "📊 ",h("strong",null,"가격 자동 조정 중"),
+      " — 매물이 늘면 가격↓, 줄면 가격↑. 등록 30일 내 소폭 상승, 이후 장기 할인 적용."
+    ),
     h("div",{style:{display:"flex",gap:4,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}},
       h(Btn,{onClick:()=>{setTab("listings");setShowForm(false);},style:tabS("listings")},"📋 매물"),
       h(Btn,{onClick:()=>{setTab("complexes");setShowForm(false);},style:tabS("complexes")},"🏢 단지")
@@ -508,7 +568,10 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
               h("div",{style:{display:"flex",gap:6,marginBottom:4}},h(TradeBadge,{type:l.type}),h("span",{style:{fontSize:11,padding:"2px 6px",borderRadius:6,background:l.status==="판매중"?"#d1fae5":"#f1f5f9",color:l.status==="판매중"?"#065f46":"#64748b",fontWeight:600}},l.status)),
               h("div",{style:{fontWeight:700,color:"#0f172a",fontSize:14}},`${c?.name||"?"} ${l.unit}`),
               h("div",{style:{fontSize:12,color:"#64748b"}},`${c?.gu||""} ${c?.dong||""} · ${l.size}㎡ · ${l.floor}층`),
-              h("div",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l))
+              h("div",{style:{display:"flex",alignItems:"center",gap:4}},
+              h("span",{style:{fontSize:13,fontWeight:700,color:"#1e40af"}},priceLabel(l,listings,complexes)),
+              (()=>{const dp=calcDynamicPrice(l,listings,complexes);if(!dp||Math.abs(dp.pct)<0.3)return null;const up=dp.pct>0;return h("span",{style:{fontSize:10,fontWeight:800,padding:"1px 5px",borderRadius:4,background:up?"#fef2f2":"#f0fdf4",color:up?"#dc2626":"#16a34a"}},(up?"▲":"▼")+Math.abs(dp.pct)+"%");})()
+            )
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:5,padding:"10px 10px 10px 0",flexShrink:0}},
               h(Btn,{onClick:()=>{setLForm({...l,complexId:String(l.complexId)});setEditItem(l);setShowForm(true);},style:rowS("#f1f5f9","#475569")},"수정"),
@@ -523,7 +586,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     // ─ 매물 폼 ─
     tab==="listings"&&showForm&&h("div",{style:{background:"#fff",borderRadius:16,padding:22,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}},
       h("div",{style:{fontWeight:800,fontSize:16,color:"#0f172a",marginBottom:16}},editItem?"매물 수정":"새 매물 등록"),
-      fld("단지 선택",h("select",{value:lForm.complexId,onChange:e=>setLForm(f=>({...f,complexId:e.target.value})),style:iS},h("option",{value:""},"선택"),...complexes.map(c=>h("option",{key:c.id,value:c.id},`${c.name} (${c.gu} ${c.dong})`)))),
+      fld("단지 선택",h("select",{value:lForm.complexId,onChange:e=>setLForm(f=>({...f,complexId:e.target.value})),style:iS},h("option",{value:""},"선택"),...complexes.map(c=>h("option",{key:c.id,value:c.id},complexLabel(c))))),
       fld("호수",h("input",{value:lForm.unit,onChange:e=>setLForm(f=>({...f,unit:e.target.value})),placeholder:"예: 1502호",style:iS})),
       fld("거래유형",h("select",{value:lForm.type,onChange:e=>setLForm(f=>({...f,type:e.target.value})),style:iS},...["매매","전세","월세"].map(t=>h("option",{key:t},t)))),
       fld(lForm.type==="월세"?"보증금 (만원)":"가격 (만원)",h("input",{type:"number",value:lForm.price,onChange:e=>setLForm(f=>({...f,price:e.target.value})),style:iS})),
