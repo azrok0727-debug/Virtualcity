@@ -1038,7 +1038,7 @@ function UserApp({listings,complexes,trades,setTrades}){
   const [selCx,setSelCx]=useState(null);
   const [fromCxL,setFromCxL]=useState(null);
   const scrollPos=useRef(0); // 목록 스크롤 위치 저장
-  const completedIds=useRef(new Set()); // 즉시 거래완료 처리된 매물 id
+  const [completedIds,setCompletedIds]=useState(()=>new Set()); // 즉시 거래완료 처리된 매물 id
 
   const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
 
@@ -1058,7 +1058,7 @@ function UserApp({listings,complexes,trades,setTrades}){
       setTrades(updatedTrades);
       saveTrades(updatedTrades);
       // 실거래 기록 → 해당 매물 거래완료 처리 (즉시 ref에도 기록)
-      completedIds.current.add(listing.id);
+      setCompletedIds(prev=>new Set([...prev,listing.id]));
       const updatedListings=listings.map(l=>l.id===listing.id?{...l,status:"거래완료"}:l);
       setListings(updatedListings);
       saveAll(complexes,updatedListings).then(()=>resolve());
@@ -1075,7 +1075,7 @@ function UserApp({listings,complexes,trades,setTrades}){
 
   const filtered=useMemo(()=>listings.filter(l=>{
     if(l.status!=="판매중")return false;
-    if(completedIds.current.has(l.id))return false;
+    if(completedIds.has(l.id))return false;
     const c=complexes.find(cx=>cx.id===l.complexId);if(!c)return false;
     if(selGus.length>0&&!selGus.includes(c.gu))return false;
     if(selDong!=="전체"&&c.dong!==selDong)return false;
@@ -1083,7 +1083,7 @@ function UserApp({listings,complexes,trades,setTrades}){
     if(propType!=="전체"&&c.type!==propType)return false;
     if(kw&&!c.name.includes(kw)&&!c.address.includes(kw))return false;
     return true;
-  }),[listings,complexes,selGus,selDong,trade,propType,kw]);
+  }),[listings,complexes,selGus,selDong,trade,propType,kw,completedIds]);
 
   const filtCx=useMemo(()=>complexes.filter(c=>{
     if(selGus.length>0&&!selGus.includes(c.gu))return false;
