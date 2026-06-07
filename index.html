@@ -1048,9 +1048,13 @@ function UserApp({listings,complexes,trades,setTrades}){
     const now=new Date();
     const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
     const newTrade={id:Date.now(),complexId:cxId,price,lastPrice:price,delta,date:dateStr};
-    const updated=[...(trades||[]),newTrade];
-    setTrades(updated);
-    saveTrades(updated);
+    const updatedTrades=[...(trades||[]),newTrade];
+    setTrades(updatedTrades);
+    saveTrades(updatedTrades);
+    // 실거래 기록 → 해당 매물 거래완료 처리
+    const updatedListings=listings.map(l=>l.id===listing.id?{...l,status:"거래완료"}:l);
+    setListings(updatedListings);
+    saveAll(complexes,updatedListings);
   },[listings,complexes,trades]);
 
   const counts=useMemo(()=>{
@@ -1181,7 +1185,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
       const newItems=Array.from({length:count},(_,i)=>({
         ...d,
         id:Date.now()+i,
-        unit:count>1?(d.unit?d.unit+"-"+(i+1):String(i+1)+"호"):d.unit,
+        unit:d.unit||"",
       }));
       updated=[...listings,...newItems];
     }
