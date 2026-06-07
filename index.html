@@ -226,7 +226,7 @@ const DEFAULT_LISTINGS=[
 ];
 
 // ── 헬퍼 ────────────────────────────────────────────────────────────────────
-const fmt=w=>w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;
+const fmt=w=>{if(!w||isNaN(w))return"0만";return w>=10000?`${Math.floor(w/10000)}억${w%10000>0?" "+(w%10000).toLocaleString()+"만":""}`.trim():`${w.toLocaleString()}만`;};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── 동적 가격 + 대출 엔진 ─────────────────────────────────────────────────────
@@ -257,7 +257,10 @@ function calcDynamicPrice(listing,allListings,complexes){
   const loanBoost=(mi-0.5)*0.06; // 시장 과열시 가격 상승 압력
   const pct=Math.max(-0.25,Math.min(0.20,supplyP+guP+timeP+loanBoost));
   const adj=v=>v!=null?Math.round(v*(1+pct)/100)*100:null;
-  return{price:adj(listing.price)||listing.price,deposit:adj(listing.deposit),monthly:listing.monthly?Math.round(listing.monthly*(1+pct)):null,pct:Math.round(pct*1000)/10};
+  const adjPrice=listing.type==="월세"?listing.price:(adj(listing.price)||listing.price);
+  const adjDeposit=listing.deposit!=null?adj(listing.deposit):null;
+  const adjMonthly=listing.monthly!=null?Math.round(listing.monthly*(1+pct)):null;
+  return{price:adjPrice,deposit:adjDeposit,monthly:adjMonthly,pct:Math.round(pct*1000)/10};
 }
 
 // 대출 조건 자동 계산
@@ -299,11 +302,20 @@ function PriceTag({pct}){
 }
 
 function priceLabel(listing,allListings,complexes){
+  if(!listing)return"-";
   const dp=(allListings&&complexes)?calcDynamicPrice(listing,allListings,complexes):null;
   const p=dp||listing;
-  const base=listing.type==="월세"
-    ?`보 ${fmt(p.deposit!=null?p.deposit:listing.deposit)} / 월 ${p.monthly!=null?p.monthly:listing.monthly}만`
-    :fmt(p.price!=null?p.price:listing.price);
+  let base;
+  if(listing.type==="월세"){
+    const dep=p.deposit!=null?p.deposit:(listing.deposit||0);
+    const mon=p.monthly!=null?p.monthly:(listing.monthly||0);
+    base=`보 ${fmt(dep)} / 월 ${mon}만`;
+  } else if(listing.type==="전세"){
+    const dep=p.deposit!=null?p.deposit:(listing.deposit||listing.price||0);
+    base=fmt(dep);
+  } else {
+    base=fmt(p.price!=null?p.price:(listing.price||0));
+  }
   if(!dp||Math.abs(dp.pct)<0.3)return base;
   return h(Fragment,null,base,h(PriceTag,{pct:dp.pct}));
 }
@@ -349,7 +361,7 @@ function LineChart({data,color,height=160,label}){
 function buildPriceHistory(listing,allListings,complexes,trades){
   if(!listing)return[];
   const cxId=listing.complexId;
-  const base=listing.price||listing.deposit||0;
+  const base=listing.type==="월세"?(listing.deposit||0):(listing.price||listing.deposit||0);
   const dp=calcDynamicPrice(listing,allListings,complexes);
   const now=dp?dp.price:base;
   // 단지 단위 실거래 기록 (같은 단지 모든 매물 공유)
@@ -417,7 +429,8 @@ function TradeHistory({complexId,trades,color}){
 // ── 대출 계산기 컴포넌트 ─────────────────────────────────────────────────────
 function LoanCalc({listing,allListings,complexes}){
   const dp=calcDynamicPrice(listing,allListings,complexes);
-  const currentPrice=(listing.type==="월세"?listing.deposit:dp?.price||listing.price)||0;
+  if(!listing||listing.type==="월세")return null;
+  const currentPrice=(dp?.price||listing.price||listing.deposit)||0;
   const tradeType=listing.type==="전세"?"전세":"매매";
   const cond=calcLoanCondition(currentPrice,tradeType,allListings,complexes);
 
@@ -839,7 +852,7 @@ function UserApp({listings,complexes,trades,setTrades}){
   // 실거래 기록 — 단지 단위로 저장 (같은 단지 매물들이 공유)
   const addTrade=useCallback((listing)=>{
     const dp=calcDynamicPrice(listing,listings,complexes);
-    const price=dp?dp.price:(listing.price||listing.deposit||0);
+    const price=listing.type==="월세"?(dp?.deposit||listing.deposit||0):(dp?.price||listing.price||listing.deposit||0);
     const cxId=listing.complexId;
     const last=(trades||[]).filter(t=>t.complexId===cxId).slice(-1)[0];
     const delta=last?price-last.price:0;
@@ -957,7 +970,17 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
   const rowS=(bg,color)=>({background:bg,border:"none",borderRadius:7,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600,color});
 
   const saveL=()=>{
-    const d={...lForm,complexId:Number(lForm.complexId),price:Number(lForm.price),deposit:lForm.deposit?Number(lForm.deposit):null,monthly:lForm.monthly?Number(lForm.monthly):null,size:Number(lForm.size),rooms:Number(lForm.rooms),baths:Number(lForm.baths),floor:Number(lForm.floor),registeredAt:new Date().toISOString().split("T")[0]};
+    const isMonthly=lForm.type==="월세";
+    const isJeonse=lForm.type==="전세";
+    const d={
+      ...lForm,
+      complexId:Number(lForm.complexId),
+      price:isMonthly?Number(lForm.deposit||0):(isJeonse?Number(lForm.price||0):Number(lForm.price||0)),
+      deposit:isMonthly?Number(lForm.deposit||0):(isJeonse?Number(lForm.price||0):null),
+      monthly:isMonthly?Number(lForm.monthly||0):null,
+      size:Number(lForm.size),rooms:Number(lForm.rooms),baths:Number(lForm.baths),floor:Number(lForm.floor),
+      registeredAt:new Date().toISOString().split("T")[0]
+    };
     let updated;
     if(editItem)updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
     else updated=[...listings,{...d,id:Date.now()}];
