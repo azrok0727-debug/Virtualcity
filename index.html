@@ -36,100 +36,128 @@ const manifest={
 const blob=new Blob([JSON.stringify(manifest)],{type:"application/json"});
 document.getElementById("manifestLink").href=URL.createObjectURL(blob);
 
-// ── localStorage 유틸 (사진 분리 저장으로 용량 최적화) ─────────────────
-const LS_COMPLEXES="vrc_complexes";
-const LS_LISTINGS="vrc_listings";
-const LS_PHOTOS="vrc_photos"; // {cx_ID: base64, lp_ID_0: base64, ...}
+// ── IndexedDB 유틸 (localStorage 대비 수백MB 저장 가능) ─────────────────
+const DB_NAME="vrc_db", DB_VER=2;
+let _db=null;
 
-function lsGet(key,fallback){
-  try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback;}
+function openDB(){
+  if(_db)return Promise.resolve(_db);
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open(DB_NAME,DB_VER);
+    req.onupgradeneeded=e=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains("kv"))db.createObjectStore("kv");
+    };
+    req.onsuccess=e=>{_db=e.target.result;res(_db);};
+    req.onerror=e=>rej(e);
+  });
+}
+function idbGet(key,fallback=null){
+  return openDB().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction("kv","readonly");
+    const req=tx.objectStore("kv").get(key);
+    req.onsuccess=()=>res(req.result!==undefined?req.result:fallback);
+    req.onerror=()=>res(fallback);
+  })).catch(()=>fallback);
+}
+function idbSet(key,val){
+  return openDB().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction("kv","readwrite");
+    tx.objectStore("kv").put(val,key);
+    tx.oncomplete=()=>res();
+    tx.onerror=e=>rej(e);
+  })).catch(e=>console.error("IDB 저장 실패",e));
+}
+function idbGetSync(key,fallback=null){
+  // 동기 폴백 (초기 렌더용) — localStorage에서 읽음
+  try{const v=localStorage.getItem("vrc_"+key);return v?JSON.parse(v):fallback;}
   catch{return fallback;}
 }
-function lsSet(key,val){
+
+// 앱 시작 시 localStorage → IndexedDB 마이그레이션
+async function migrateFromLS(){
   try{
-    localStorage.setItem(key,JSON.stringify(val));
-  }catch(e){
-    // 용량 초과 시 사진 데이터만 정리 후 재시도
-    console.warn("localStorage 용량 초과, 사진 정리 후 재시도");
-    try{
-      // 오래된 매물 사진부터 제거
-      const photos=lsGet(LS_PHOTOS,{});
-      const keys=Object.keys(photos).filter(k=>k.startsWith("lp_"));
-      if(keys.length>0){
-        delete photos[keys[0]];
-        localStorage.setItem(LS_PHOTOS,JSON.stringify(photos));
+    const already=await idbGet("migrated_v2");
+    if(already)return;
+    const keys=["complexes","listings","trades","photos"];
+    for(const k of keys){
+      const v=localStorage.getItem("vrc_"+k)||localStorage.getItem("vrc_"+k.replace("complexes","complexes"));
+      if(v){
+        try{await idbSet("vrc_"+k,JSON.parse(v));}catch{}
       }
-      localStorage.setItem(key,JSON.stringify(val));
-    }catch(e2){console.error("저장 실패:",e2);}
-  }
-}
-
-// 사진 저장/로드 헬퍼
-function savePhoto(key,base64){
-  const photos=lsGet(LS_PHOTOS,{});
-  if(base64)photos[key]=base64;
-  else delete photos[key];
-  lsSet(LS_PHOTOS,photos);
-}
-function loadPhoto(key){
-  const photos=lsGet(LS_PHOTOS,{});
-  return photos[key]||null;
-}
-
-// 단지/매물에서 사진 필드를 제거하고 별도 저장
-function stripAndSavePhotos(complexes,listings){
-  const photos=lsGet(LS_PHOTOS,{});
-  const cleanComplexes=complexes.map(cx=>{
-    if(cx.photo){photos["cx_"+cx.id]=cx.photo;}
-    const{photo,...rest}=cx;
-    return rest;
-  });
-  const cleanListings=listings.map(l=>{
-    if(l.photos&&l.photos.length){
-      l.photos.forEach((p,i)=>{if(p)photos["lp_"+l.id+"_"+i]=p;});
     }
-    const{photos:_,...rest}=l;
-    return rest;
+    // 기존 vrc_ 키들도 시도
+    ["vrc_complexes","vrc_listings","vrc_trades","vrc_photos"].forEach(k=>{
+      const v=localStorage.getItem(k);
+      if(v){try{idbSet(k,JSON.parse(v));}catch{}}
+    });
+    await idbSet("migrated_v2",true);
+    console.log("IndexedDB 마이그레이션 완료");
+  }catch(e){console.warn("마이그레이션 실패",e);}
+}
+
+// 통합 저장 (사진 분리)
+async function saveAll(complexes,listings){
+  const photos={};
+  const cleanCx=complexes.map(cx=>{
+    if(cx.photo)photos["cx_"+cx.id]=cx.photo;
+    const{photo,...rest}=cx; return rest;
   });
-  try{localStorage.setItem(LS_PHOTOS,JSON.stringify(photos));}catch(e){console.warn("사진 저장 실패",e);}
-  return{cleanComplexes,cleanListings};
-}
-
-// 단지/매물에 사진 필드 복원
-function restorePhotos(complexes,listings){
-  const photos=lsGet(LS_PHOTOS,{});
-  const restoredCx=complexes.map(cx=>({
-    ...cx,
-    photo:photos["cx_"+cx.id]||null
-  }));
-  const restoredL=listings.map(l=>{
-    const lPhotos=[];
-    for(let i=0;i<5;i++){
-      const p=photos["lp_"+l.id+"_"+i];
-      if(p)lPhotos.push(p);
-    }
-    return{...l,photos:lPhotos};
+  const cleanL=listings.map(l=>{
+    (l.photos||[]).forEach((p,i)=>{if(p)photos["lp_"+l.id+"_"+i]=p;});
+    const{photos:_,...rest}=l; return rest;
   });
-  return{complexes:restoredCx,listings:restoredL};
+  await Promise.all([
+    idbSet("vrc_complexes",cleanCx),
+    idbSet("vrc_listings",cleanL),
+    idbSet("vrc_photos",photos),
+  ]);
+  // 백업용 localStorage도 텍스트만 저장 (사진 제외)
+  try{
+    localStorage.setItem("vrc_complexes",JSON.stringify(cleanCx));
+    localStorage.setItem("vrc_listings",JSON.stringify(cleanL));
+  }catch{}
 }
 
-// 통합 저장 함수 (사진 분리)
-function saveAll(complexes,listings){
-  const{cleanComplexes,cleanListings}=stripAndSavePhotos(complexes,listings);
-  lsSet(LS_COMPLEXES,cleanComplexes);
-  lsSet(LS_LISTINGS,cleanListings);
+async function loadAll(defaultCx,defaultL){
+  await migrateFromLS();
+  const [rawCx,rawL,photos]=await Promise.all([
+    idbGet("vrc_complexes",null),
+    idbGet("vrc_listings",null),
+    idbGet("vrc_photos",{}),
+  ]);
+  const cx=(rawCx||defaultCx).map(cx=>({...cx,photo:photos["cx_"+cx.id]||null}));
+  const ls=(rawL||defaultL).map(l=>{
+    const lp=[];
+    for(let i=0;i<10;i++){const p=photos["lp_"+l.id+"_"+i];if(p)lp.push(p);}
+    return{...l,photos:lp};
+  });
+  return{complexes:cx,listings:ls};
 }
 
-// 용량 현황 확인
-function getStorageUsage(){
-  let total=0;
-  for(let k in localStorage){
-    if(localStorage.hasOwnProperty(k)&&k.startsWith("vrc_")){
-      total+=localStorage[k].length*2;
+async function saveTrades(trades){
+  await idbSet("vrc_trades",trades);
+}
+async function loadTrades(){
+  return idbGet("vrc_trades",[]);
+}
+
+// 용량 추정 (IndexedDB는 quota API 사용)
+async function getStorageUsage(){
+  try{
+    if(navigator.storage&&navigator.storage.estimate){
+      const{usage,quota}=await navigator.storage.estimate();
+      return{used:(usage/1024/1024).toFixed(1),total:(quota/1024/1024).toFixed(0),pct:Math.round(usage/quota*100)};
     }
-  }
-  return(total/1024/1024).toFixed(2);
+  }catch{}
+  return{used:"?",total:"무제한",pct:0};
 }
+
+const LS_COMPLEXES="vrc_complexes";
+const LS_LISTINGS="vrc_listings";
+// 하위 호환용 동기 로드 (초기 렌더 전 빈 배열, useEffect로 채움)
+function lsGet(key,fallback){try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback;}catch{return fallback;}}
+function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch{}}
 
 // 기존 listingId 기반 trades → complexId 기반 마이그레이션
 (function migrateTrades(){
@@ -820,7 +848,7 @@ function UserApp({listings,complexes,trades,setTrades}){
     const newTrade={id:Date.now(),complexId:cxId,price,delta,date:dateStr};
     const updated=[...(trades||[]),newTrade];
     setTrades(updated);
-    lsSet("vrc_trades",updated);
+    saveTrades(updated);
   },[listings,complexes,trades]);
 
   const counts=useMemo(()=>{
@@ -894,6 +922,24 @@ function UserApp({listings,complexes,trades,setTrades}){
 }
 
 // ── 관리자 앱 ───────────────────────────────────────────────────────────────
+// 저장 용량 표시 컴포넌트
+function StorageBar(){
+  const [info,setInfo]=useState({used:"...",total:"측정중",pct:0});
+  useEffect(()=>{
+    getStorageUsage().then(v=>setInfo(v));
+  },[]);
+  const col=info.pct>80?"#dc2626":info.pct>50?"#f59e0b":"#10b981";
+  return h("div",{style:{background:"#f8fafc",borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}},
+    h("span",{style:{fontSize:11,color:"#64748b",whiteSpace:"nowrap"}},"💾 IndexedDB"),
+    h("div",{style:{flex:1,background:"#e2e8f0",borderRadius:4,height:6,overflow:"hidden"}},
+      info.pct>0?h("div",{style:{width:Math.min(100,info.pct)+"%",height:"100%",background:col,borderRadius:4,transition:"width 0.3s"}}):null
+    ),
+    h("span",{style:{fontSize:11,fontWeight:600,color:col,whiteSpace:"nowrap"}},
+      info.used+"MB / "+info.total+(info.total==="무제한"?"":"MB")
+    )
+  );
+}
+
 function AdminApp({listings,setListings,complexes,setComplexes}){
   const [tab,setTab]=useState("listings");
   const [showForm,setShowForm]=useState(false);
@@ -916,7 +962,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     if(editItem)updated=listings.map(l=>l.id===editItem.id?{...d,id:editItem.id}:l);
     else updated=[...listings,{...d,id:Date.now()}];
     setListings(updated);
-    saveAll(complexes,updated);
+    saveAll(complexes,updated).then(()=>console.log("매물 저장완료"));
     setShowForm(false);
   };
   const saveC=()=>{
@@ -925,7 +971,7 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     if(editItem)updated=complexes.map(c=>c.id===editItem.id?{...d,id:editItem.id}:c);
     else updated=[...complexes,{...d,id:Date.now()}];
     setComplexes(updated);
-    saveAll(updated,listings);
+    saveAll(updated,listings).then(()=>console.log("단지 저장완료"));
     setShowForm(false);
   };
 
@@ -934,19 +980,8 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
 
   return h("div",null,
     Modal,
-    // 저장 용량 표시
-    (()=>{
-      const mb=parseFloat(getStorageUsage());
-      const pct=Math.round(mb/5*100);
-      const col=pct>80?"#dc2626":pct>50?"#f59e0b":"#10b981";
-      return h("div",{style:{background:"#f8fafc",borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}},
-        h("div",{style:{flex:1,background:"#e2e8f0",borderRadius:4,height:6,overflow:"hidden"}},
-          h("div",{style:{width:Math.min(100,pct)+"%",height:"100%",background:col,borderRadius:4,transition:"width 0.3s"}})
-        ),
-        h("span",{style:{fontSize:11,fontWeight:600,color:col,whiteSpace:"nowrap"}},mb+"MB / 5MB"),
-        pct>80&&h("span",{style:{fontSize:10,color:"#dc2626",fontWeight:600}},"⚠️ 용량 부족!")
-      );
-    })(),
+    // 저장 용량 표시 (IndexedDB)
+    h(StorageBar,null),
     // 통계
     h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:18}},
       ...[["총 매물",stats.total,"#6366f1"],["판매중",stats.active,"#10b981"],["거래완료",stats.done,"#64748b"],["단지수",stats.cx,"#f59e0b"]].map(([k,v,c])=>
@@ -1082,19 +1117,28 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
 // ── 루트 ────────────────────────────────────────────────────────────────────
 function App(){
   const [mode,setMode]=useState("user");
-  const [complexes,setComplexes]=useState(()=>{
-    const raw=lsGet(LS_COMPLEXES,null);
-    if(!raw)return DEFAULT_COMPLEXES;
-    const{complexes:restored}=restorePhotos(raw,lsGet(LS_LISTINGS,DEFAULT_LISTINGS));
-    return restored;
-  });
-  const [listings,setListings]=useState(()=>{
-    const raw=lsGet(LS_LISTINGS,null);
-    if(!raw)return DEFAULT_LISTINGS;
-    const{listings:restored}=restorePhotos(lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES),raw);
-    return restored;
-  });
-  const [trades,setTrades]=useState(()=>lsGet("vrc_trades",[]));
+  const [complexes,setComplexes]=useState(()=>lsGet(LS_COMPLEXES,DEFAULT_COMPLEXES).map(cx=>({...cx,photo:null})));
+  const [listings,setListings]=useState(()=>lsGet(LS_LISTINGS,DEFAULT_LISTINGS).map(l=>({...l,photos:[]})));
+  const [trades,setTrades]=useState([]);
+  const [loaded,setLoaded]=useState(false);
+
+  // IndexedDB에서 비동기 로드
+  useEffect(()=>{
+    loadAll(DEFAULT_COMPLEXES,DEFAULT_LISTINGS).then(({complexes:cx,listings:ls})=>{
+      setComplexes(cx);
+      setListings(ls);
+    });
+    loadTrades().then(t=>setTrades(t||[]));
+    setTimeout(()=>setLoaded(true),300);
+  },[]);
+
+  if(!loaded)return h("div",{style:{minHeight:"100vh",background:"#0f172a",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}},
+    h("div",{style:{fontSize:48}},"🏙️"),
+    h("div",{style:{color:"#fff",fontWeight:700,fontSize:18}},"가상도시 부동산"),
+    h("div",{style:{color:"#64748b",fontSize:13}},"데이터 불러오는 중..."),
+    h("div",{style:{width:48,height:48,border:"4px solid #1e3a5f",borderTop:"4px solid #3b82f6",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+    h("style",null,"@keyframes spin{to{transform:rotate(360deg)}}")
+  );
 
   const headerBg=mode==="user"?"linear-gradient(135deg,#0f172a,#1e3a5f 60%,#0c4a6e)":"linear-gradient(135deg,#7f1d1d,#991b1b,#dc2626)";
   const modeBtn=(v,label)=>h(Btn,{onClick:()=>setMode(v),style:{padding:"7px 12px",borderRadius:8,fontSize:12,fontWeight:700,background:mode===v?"rgba(255,255,255,0.18)":"transparent",color:mode===v?"#fff":"rgba(255,255,255,0.45)"}},label);
