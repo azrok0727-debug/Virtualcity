@@ -604,11 +604,7 @@ function MarketPanel({listing,complex,allListings,complexes,trades,onAddTrade,on
     tab==="trades"&&h("div",null,
       h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
         h("span",{style:{fontSize:12,fontWeight:700,color:"#0f172a"}},"단지 실거래 내역"),
-        h(Btn,{onClick:()=>{
-  Promise.resolve(onAddTrade(listing)).then(()=>{
-    if(onBack) onBack();
-  });
-},style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
+        h(Btn,{onClick:()=>onAddTrade(listing),style:{fontSize:11,background:color,color:"#fff",borderRadius:7,padding:"5px 10px",fontWeight:700}},"+ 기록")
       ),
       h(TradeHistory,{complexId:cxId,trades,color})
     ),
@@ -1038,31 +1034,31 @@ function UserApp({listings,complexes,trades,setTrades}){
   const [selCx,setSelCx]=useState(null);
   const [fromCxL,setFromCxL]=useState(null);
   const scrollPos=useRef(0); // 목록 스크롤 위치 저장
-  const [completedIds,setCompletedIds]=useState(()=>new Set()); // 즉시 거래완료 처리된 매물 id
 
   const toggleGu=gu=>{setSelGus(p=>p.includes(gu)?p.filter(g=>g!==gu):[...p,gu]);setSelDong("전체");};
 
   // 실거래 기록 추가
   // 실거래 기록 — 단지 단위로 저장 (같은 단지 매물들이 공유)
   const addTrade=useCallback((listing)=>{
-    return new Promise(resolve=>{
-      const dp=calcDynamicPrice(listing,listings,complexes);
-      const price=listing.type==="월세"?(dp?.deposit||listing.deposit||0):(dp?.price||listing.price||listing.deposit||0);
-      const cxId=listing.complexId;
-      const last=(trades||[]).filter(t=>t.complexId===cxId).slice(-1)[0];
-      const delta=last?price-last.price:0;
-      const now=new Date();
-      const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
-      const newTrade={id:Date.now(),complexId:cxId,price,lastPrice:price,delta,date:dateStr};
-      const updatedTrades=[...(trades||[]),newTrade];
-      setTrades(updatedTrades);
-      saveTrades(updatedTrades);
-      // 실거래 기록 → 해당 매물 거래완료 처리 (즉시 ref에도 기록)
-      setCompletedIds(prev=>new Set([...prev,listing.id]));
-      const updatedListings=listings.map(l=>l.id===listing.id?{...l,status:"거래완료"}:l);
-      setListings(updatedListings);
-      saveAll(complexes,updatedListings).then(()=>resolve());
-    });
+    const dp=calcDynamicPrice(listing,listings,complexes);
+    const price=listing.type==="월세"?(dp?.deposit||listing.deposit||0):(dp?.price||listing.price||listing.deposit||0);
+    const cxId=listing.complexId;
+    const last=(trades||[]).filter(t=>t.complexId===cxId).slice(-1)[0];
+    const delta=last?price-last.price:0;
+    const now=new Date();
+    const dateStr=`${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const newTrade={id:Date.now(),complexId:cxId,price,lastPrice:price,delta,date:dateStr};
+    const updatedTrades=[...(trades||[]),newTrade];
+    setTrades(updatedTrades);
+    saveTrades(updatedTrades);
+    // 거래완료 처리
+    const updatedListings=listings.map(l=>l.id===listing.id?{...l,status:"거래완료"}:l);
+    setListings(updatedListings);
+    saveAll(complexes,updatedListings);
+    // 즉시 목록으로 이동
+    setSelL(null);
+    setFromCxL(null);
+    requestAnimationFrame(()=>window.scrollTo({top:scrollPos.current,behavior:"instant"}));
   },[listings,complexes,trades]);
 
   const counts=useMemo(()=>{
@@ -1075,7 +1071,6 @@ function UserApp({listings,complexes,trades,setTrades}){
 
   const filtered=useMemo(()=>listings.filter(l=>{
     if(l.status!=="판매중")return false;
-    if(completedIds.has(l.id))return false;
     const c=complexes.find(cx=>cx.id===l.complexId);if(!c)return false;
     if(selGus.length>0&&!selGus.includes(c.gu))return false;
     if(selDong!=="전체"&&c.dong!==selDong)return false;
@@ -1083,7 +1078,7 @@ function UserApp({listings,complexes,trades,setTrades}){
     if(propType!=="전체"&&c.type!==propType)return false;
     if(kw&&!c.name.includes(kw)&&!c.address.includes(kw))return false;
     return true;
-  }),[listings,complexes,selGus,selDong,trade,propType,kw,completedIds]);
+  }),[listings,complexes,selGus,selDong,trade,propType,kw]);
 
   const filtCx=useMemo(()=>complexes.filter(c=>{
     if(selGus.length>0&&!selGus.includes(c.gu))return false;
@@ -1156,7 +1151,22 @@ function StorageBar(){
   );
 }
 
-function AdminApp({listings,setListings,complexes,setComplexes}){
+// 전체 데이터 초기화 — IndexedDB + localStorage 모두 삭제
+async function resetAllData(){
+  try{
+    // IndexedDB 전체 키 삭제
+    await idbSet("vrc_complexes",DEFAULT_COMPLEXES);
+    await idbSet("vrc_listings",DEFAULT_LISTINGS);
+    await idbSet("vrc_trades",[]);
+    await idbSet("vrc_photos",{});
+    // localStorage 백업/마이그레이션 키도 삭제
+    Object.keys(localStorage).forEach(k=>{
+      if(k.startsWith("vrc_")) localStorage.removeItem(k);
+    });
+  }catch(e){console.error("초기화 실패",e);}
+}
+
+function AdminApp({listings,setListings,complexes,setComplexes,setTrades}){
   const [tab,setTab]=useState("listings");
   const [showForm,setShowForm]=useState(false);
   const [editItem,setEditItem]=useState(null);
@@ -1219,6 +1229,18 @@ function AdminApp({listings,setListings,complexes,setComplexes}){
     Modal,
     // 저장 용량 표시 (IndexedDB)
     h(StorageBar,null),
+    h(Btn,{
+      onClick:async()=>{
+        const ok=await confirm("전체 데이터를 초기화할까요?","등록한 모든 단지·매물·사진·실거래 내역이 삭제되고 기본값으로 되돌아갑니다. 이 작업은 되돌릴 수 없습니다.");
+        if(!ok)return;
+        await resetAllData();
+        setComplexes(DEFAULT_COMPLEXES.map(cx=>({...cx,photo:null})));
+        setListings(DEFAULT_LISTINGS.map(l=>({...l,photos:[]})));
+        if(setTrades)setTrades([]);
+        await alert("초기화가 완료되었습니다.");
+      },
+      style:{width:"100%",background:"#fff",border:"2px solid #fecaca",borderRadius:10,padding:"9px 0",color:"#dc2626",fontWeight:700,fontSize:12,marginBottom:16,cursor:"pointer"}
+    },"🗑️ 전체 데이터 초기화"),
     // 통계
     h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:18}},
       ...[["총 매물",stats.total,"#6366f1"],["판매중",stats.active,"#10b981"],["거래완료",stats.done,"#64748b"],["단지수",stats.cx,"#f59e0b"]].map(([k,v,c])=>
@@ -1419,7 +1441,7 @@ function App(){
       h("span",{style:{color:"#fff",fontSize:11,fontWeight:600}},"⚠️ 관리자 전용 — 변경사항 자동 저장")
     ),
     h("div",{style:{maxWidth:960,margin:"0 auto",padding:"22px 14px 80px"}},
-      mode==="user"?h(UserApp,{listings,complexes,trades,setTrades}):h(AdminApp,{listings,setListings,complexes,setComplexes})
+      mode==="user"?h(UserApp,{listings,complexes,trades,setTrades}):h(AdminApp,{listings,setListings,complexes,setComplexes,setTrades})
     )
   );
 }
