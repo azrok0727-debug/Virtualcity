@@ -737,8 +737,9 @@ function PhotoSlider({photos,fallbackEmoji,color}){
   if(!photos||!photos.length){
     return h("div",{style:{height:220,background:color?`linear-gradient(135deg,${color}ee,${color}88)`:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:72}},fallbackEmoji||"🏠");
   }
-  return h("div",{style:{position:"relative",height:220,background:"#0f172a",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
-    h("img",{src:photos[idx],alt:"",style:{width:"100%",height:"100%",objectFit:"contain",display:"block"}}),
+  // 사진 크기에 맞게 칸이 늘어나도록 height auto, 너무 길면 maxHeight로 제한
+  return h("div",{style:{position:"relative",width:"100%",maxHeight:480,background:"#0f172a",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
+    h("img",{src:photos[idx],alt:"",style:{width:"100%",height:"auto",maxHeight:480,objectFit:"contain",display:"block"}}),
     photos.length>1&&h(Fragment,null,
       h("button",{onClick:()=>setIdx(i=>(i-1+photos.length)%photos.length),style:{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.5)",border:"none",borderRadius:"50%",width:32,height:32,color:"#fff",cursor:"pointer",fontSize:18}},"\u2039"),
       h("button",{onClick:()=>setIdx(i=>(i+1)%photos.length),style:{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.5)",border:"none",borderRadius:"50%",width:32,height:32,color:"#fff",cursor:"pointer",fontSize:18}},"\u203a"),
@@ -835,9 +836,9 @@ function ListingCard({listing,complex,onClick,allListings,allComplexes}){
   const info=DISTRICTS[complex?.gu];
   const bg=info?`linear-gradient(135deg,${info.color}cc,${info.color}66)`:"#334155";
   return h("div",{className:"card",onClick:()=>onClick(listing),style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden"}},
-    h("div",{style:{height:110,background:bg,position:"relative",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
+    h("div",{style:complex?.photo?{width:"100%",background:bg,position:"relative",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}:{height:110,background:bg,position:"relative",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
       complex?.photo
-        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"contain"}})
+        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"auto",maxHeight:180,display:"block"}})
         :h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:42}},complex?.thumbnail||"🏠"),
       h("div",{style:{position:"absolute",top:10,right:10}},h(TradeBadge,{type:listing.type}))
     ),
@@ -884,9 +885,9 @@ function ComplexCard({complex,listings,onClick}){
   const info=DISTRICTS[complex.gu];
   const cnt=listings.filter(l=>l.complexId===complex.id&&l.status==="판매중").length;
   return h("div",{className:"card",onClick:()=>onClick(complex),style:{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.07)",overflow:"hidden"}},
-    h("div",{style:{height:100,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}55)`:"#1e293b",overflow:"hidden",position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}},
+    h("div",{style:complex.photo?{width:"100%",background:info?`linear-gradient(135deg,${info.color}cc,${info.color}55)`:"#1e293b",overflow:"hidden",position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}:{height:100,background:info?`linear-gradient(135deg,${info.color}cc,${info.color}55)`:"#1e293b",overflow:"hidden",position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}},
       complex.photo
-        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"contain"}})
+        ?h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"auto",maxHeight:160,display:"block"}})
         :h("div",{style:{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:38}},complex.thumbnail||"🏠")
     ),
     h("div",{style:{padding:14}},
@@ -907,8 +908,8 @@ function ComplexDetail({complex,listings,onBack,onListingClick,allComplexes,trad
   return h("div",null,
     h("div",{style:{borderRadius:20,overflow:"hidden",marginBottom:18,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",position:"relative"}},
       complex.photo
-        ?h("div",{style:{width:"100%",height:180,background:"#0f172a",display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}},
-            h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"100%",objectFit:"contain"}})
+        ?h("div",{style:{width:"100%",maxHeight:400,background:"#0f172a",display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}},
+            h("img",{src:complex.photo,alt:"",style:{width:"100%",height:"auto",maxHeight:400,objectFit:"contain"}})
           )
         :h("div",{style:{height:180,background:info?`linear-gradient(135deg,${info.color}dd,${info.color}88)`:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:56}},complex.thumbnail||"🏠"),
       h(Btn,{onClick:onBack,style:{position:"absolute",top:14,left:14,background:"rgba(0,0,0,0.45)",borderRadius:8,color:"#fff",padding:"7px 12px",fontSize:13,backdropFilter:"blur(4px)"}},"← 목록"),
