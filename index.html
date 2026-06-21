@@ -325,8 +325,7 @@ function App() {
         monthlyHousingCost = loanInterestMonthly + rent + guaranteeFeeMonthly;
       }
 
-      const monthlySavings = salary - monthlyHousingCost - mgmtFee - livingCost;
-      const firstMonthAvailable = monthlySavings - moveCost;
+      const monthlySavings = salary - monthlyHousingCost - mgmtFee - livingCost - moveCost;
 
       const netWorth = Number(currentNetWorth) || 0;
       const investedLumpSum = Math.max(netWorth - equity, 0);
@@ -343,7 +342,6 @@ function App() {
         guaranteeFeeMonthly,
         monthlyHousingCost,
         monthlySavings,
-        firstMonthAvailable,
         investedLumpSum,
         final: projection.final,
         investedFinal: projection.investedFinal,
@@ -383,7 +381,7 @@ function App() {
             <NumberField label="월급" value={salary} onChange={setSalary} />
             <NumberField label="연 수당" value={bonus} onChange={setBonus} />
             <NumberField label="관리비" value={mgmtFee} onChange={setMgmtFee} />
-            <NumberField label="이동비용(1회)" value={moveCost} onChange={setMoveCost} />
+            <NumberField label="이동비용" value={moveCost} onChange={setMoveCost} suffix="만원/월" />
             <NumberField label="생활비" value={livingCost} onChange={setLivingCost} />
             <NumberField label="투자 금리" value={investRate} onChange={setInvestRate} suffix="% / 년" />
             <NumberField label="대출 금리" value={loanRate} onChange={setLoanRate} suffix="% / 년" />
@@ -495,12 +493,8 @@ function App() {
                   </>
                 )}
                 <div className="result-row">
-                  <span className="k">관리비 + 생활비</span>
-                  <span className="v">−{manwon(mgmtFee + livingCost)}만원/월</span>
-                </div>
-                <div className="result-row">
-                  <span className="k">입주 첫 달 가용액 (이동비용 차감)</span>
-                  <span className="v">{manwon(p.firstMonthAvailable)}만원</span>
+                  <span className="k">관리비 + 생활비 + 이동비용</span>
+                  <span className="v">−{manwon(mgmtFee + livingCost + moveCost)}만원/월</span>
                 </div>
                 <div className={`result-row total ${p.monthlySavings < 0 ? "neg" : "pos"}`}>
                   <span className="k">월 저축 가능액</span>
@@ -546,7 +540,7 @@ function App() {
         )}
 
         <div className="footnote">
-          ※ 전세·반전세·월세 보증금 대출이자는 모두 대출 금리(연 {loanRate}%) 기준 만기일시상환(이자만 매월 차감, 원금은 만기에 상환)이고, 전세의 자기자본 기회비용과 자산 재투자 수익률은 투자 금리(연 {investRate}%)를 따로 적용했어요. 전세보증금 반환보증보험료는 보증금 전체 × 연 {guaranteeRate}%로 계산해 매달 비용에서 차감했어요. 보증금 중 대출액을 제외한 자기자본분은 투자되지 않고 묶여 있다가 {years}년 뒤 그대로 돌려받는 것으로 계산했어요. 이동비용은 입주 첫 달에만 1회 차감되고, 월 저축액(정상상태)에는 포함되지 않아요. 실제 세금·중개수수료·금리 변동 등은 반영되지 않은 단순 비교용 계산입니다.
+          ※ 전세·반전세·월세 보증금 대출이자는 모두 대출 금리(연 {loanRate}%) 기준 만기일시상환(이자만 매월 차감, 원금은 만기에 상환)이고, 전세의 자기자본 기회비용과 자산 재투자 수익률은 투자 금리(연 {investRate}%)를 따로 적용했어요. 전세보증금 반환보증보험료는 보증금 전체 × 연 {guaranteeRate}%로 계산해 매달 비용에서 차감했어요. 보증금 중 대출액을 제외한 자기자본분은 투자되지 않고 묶여 있다가 {years}년 뒤 그대로 돌려받는 것으로 계산했어요. 이동비용은 매달 나가는 고정비로 보고 월 저축액 계산에 포함했어요. 실제 세금·중개수수료·금리 변동 등은 반영되지 않은 단순 비교용 계산입니다.
         </div>
       </div>
 
