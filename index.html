@@ -146,6 +146,7 @@ const DEFAULT_STATE = {
   livingCost: 60,
   investRate: 4,
   loanRate: 4,
+  guaranteeRate: 0.5,
   years: 5,
   currentNetWorth: 0,
   properties: [
@@ -214,6 +215,7 @@ function App() {
   const [livingCost, setLivingCost] = useState(initial.livingCost);
   const [investRate, setInvestRate] = useState(initial.investRate);
   const [loanRate, setLoanRate] = useState(initial.loanRate);
+  const [guaranteeRate, setGuaranteeRate] = useState(initial.guaranteeRate);
   const [years, setYears] = useState(initial.years);
   const [currentNetWorth, setCurrentNetWorth] = useState(initial.currentNetWorth);
   const [properties, setProperties] = useState(initial.properties);
@@ -252,6 +254,7 @@ function App() {
 
   const ri = investRate / 100;
   const rl = loanRate / 100;
+  const rg = guaranteeRate / 100;
 
   // 자동 저장 (localStorage)
   useEffect(() => {
@@ -259,7 +262,7 @@ function App() {
       isFirstRun.current = false;
       return;
     }
-    const state = { salary, bonus, mgmtFee, moveCost, livingCost, investRate, loanRate, years, currentNetWorth, properties };
+    const state = { salary, bonus, mgmtFee, moveCost, livingCost, investRate, loanRate, guaranteeRate, years, currentNetWorth, properties };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       setShowSaved(true);
@@ -268,7 +271,7 @@ function App() {
     } catch (e) {
       // 저장 실패 시 조용히 무시
     }
-  }, [salary, bonus, mgmtFee, moveCost, livingCost, investRate, loanRate, years, currentNetWorth, properties]);
+  }, [salary, bonus, mgmtFee, moveCost, livingCost, investRate, loanRate, guaranteeRate, years, currentNetWorth, properties]);
 
   function updateProperty(id, patch) {
     setProperties((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -311,14 +314,15 @@ function App() {
       const equity = Math.max(deposit - loan, 0);
       const loanInterestMonthly = (loan * rl) / 12;
       const rent = Number(p.rent) || 0;
+      const guaranteeFeeMonthly = (deposit * rg) / 12;
 
       let opportunityCostMonthly = 0;
       let monthlyHousingCost;
       if (p.type === "jeonse") {
         opportunityCostMonthly = (equity * ri) / 12;
-        monthlyHousingCost = loanInterestMonthly + opportunityCostMonthly;
+        monthlyHousingCost = loanInterestMonthly + opportunityCostMonthly + guaranteeFeeMonthly;
       } else {
-        monthlyHousingCost = loanInterestMonthly + rent;
+        monthlyHousingCost = loanInterestMonthly + rent + guaranteeFeeMonthly;
       }
 
       const monthlySavings = salary - monthlyHousingCost - mgmtFee - livingCost;
@@ -336,6 +340,7 @@ function App() {
         rent,
         loanInterestMonthly,
         opportunityCostMonthly,
+        guaranteeFeeMonthly,
         monthlyHousingCost,
         monthlySavings,
         firstMonthAvailable,
@@ -345,7 +350,7 @@ function App() {
         path: projection.path,
       };
     });
-  }, [properties, salary, mgmtFee, livingCost, moveCost, ri, rl, bonus, years, currentNetWorth]);
+  }, [properties, salary, mgmtFee, livingCost, moveCost, ri, rl, rg, bonus, years, currentNetWorth]);
 
   const ranked = useMemo(() => [...computed].sort((a, b) => b.final - a.final), [computed]);
   const best = ranked[0];
@@ -382,6 +387,7 @@ function App() {
             <NumberField label="생활비" value={livingCost} onChange={setLivingCost} />
             <NumberField label="투자 금리" value={investRate} onChange={setInvestRate} suffix="% / 년" />
             <NumberField label="대출 금리" value={loanRate} onChange={setLoanRate} suffix="% / 년" />
+            <NumberField label="보증보험 요율" value={guaranteeRate} onChange={setGuaranteeRate} suffix="% / 년" />
           </div>
           <div style={{ marginTop: 12 }}>
             <NumberField label="현재 보유 자산" value={currentNetWorth} onChange={setCurrentNetWorth} />
@@ -467,6 +473,10 @@ function App() {
                       <span className="k">자기자본 기회비용 (연 {investRate}%)</span>
                       <span className="v">{manwon(p.opportunityCostMonthly)}만원/월</span>
                     </div>
+                    <div className="result-row">
+                      <span className="k">보증보험료 (연 {guaranteeRate}%)</span>
+                      <span className="v">{manwon(p.guaranteeFeeMonthly)}만원/월</span>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -475,7 +485,11 @@ function App() {
                       <span className="v">{manwon(p.loanInterestMonthly)}만원/월</span>
                     </div>
                     <div className="result-row">
-                      <span className="k">월세 + 대출이자</span>
+                      <span className="k">보증보험료 (연 {guaranteeRate}%)</span>
+                      <span className="v">{manwon(p.guaranteeFeeMonthly)}만원/월</span>
+                    </div>
+                    <div className="result-row">
+                      <span className="k">월세 + 대출이자 + 보증료</span>
                       <span className="v">−{manwon(p.monthlyHousingCost)}만원/월</span>
                     </div>
                   </>
@@ -532,7 +546,7 @@ function App() {
         )}
 
         <div className="footnote">
-          ※ 전세·반전세·월세 보증금 대출이자는 모두 대출 금리(연 {loanRate}%) 기준 만기일시상환(이자만 매월 차감, 원금은 만기에 상환)이고, 전세의 자기자본 기회비용과 자산 재투자 수익률은 투자 금리(연 {investRate}%)를 따로 적용했어요. 보증금 중 대출액을 제외한 자기자본분은 투자되지 않고 묶여 있다가 {years}년 뒤 그대로 돌려받는 것으로 계산했어요. 이동비용은 입주 첫 달에만 1회 차감되고, 월 저축액(정상상태)에는 포함되지 않아요. 실제 세금·중개수수료·금리 변동 등은 반영되지 않은 단순 비교용 계산입니다.
+          ※ 전세·반전세·월세 보증금 대출이자는 모두 대출 금리(연 {loanRate}%) 기준 만기일시상환(이자만 매월 차감, 원금은 만기에 상환)이고, 전세의 자기자본 기회비용과 자산 재투자 수익률은 투자 금리(연 {investRate}%)를 따로 적용했어요. 전세보증금 반환보증보험료는 보증금 전체 × 연 {guaranteeRate}%로 계산해 매달 비용에서 차감했어요. 보증금 중 대출액을 제외한 자기자본분은 투자되지 않고 묶여 있다가 {years}년 뒤 그대로 돌려받는 것으로 계산했어요. 이동비용은 입주 첫 달에만 1회 차감되고, 월 저축액(정상상태)에는 포함되지 않아요. 실제 세금·중개수수료·금리 변동 등은 반영되지 않은 단순 비교용 계산입니다.
         </div>
       </div>
 
